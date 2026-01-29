@@ -4,7 +4,10 @@
    [cli-matic.core :as cli]
    [clojure.pprint :as pprint]
    [plan.config :as config]
-   [plan.db :as db]))
+   [plan.db :as db]
+   [plan.models.fact :as fact]
+   [plan.models.plan :as plan]
+   [plan.models.task :as task]))
 
 (set! *warn-on-reflection* true)
 
@@ -16,7 +19,7 @@
     [:description :text]
     [:content :text]
     [:created_at :datetime [:default :current_timestamp]]
-    [:updated_at :datetime]]})
+    [:updated_at :datetime [:default :current_timestamp]]]})
 
 (def tasks-table
   {:create-table [:tasks :if-not-exists]
@@ -28,7 +31,7 @@
     [:content :text]
     [:parent_id :integer]
     [:created_at :datetime [:default :current_timestamp]]
-    [:updated_at :datetime]]})
+    [:updated_at :datetime [:default :current_timestamp]]]})
 
 (def facts-table
   {:create-table [:facts :if-not-exists]
@@ -38,7 +41,7 @@
     [:description :text]
     [:content :text]
     [:created_at :datetime [:default :current_timestamp]]
-    [:updated_at :datetime]]})
+    [:updated_at :datetime [:default :current_timestamp]]]})
 
 (def idx-tasks-plan-id
   {:create-index [[:idx_tasks_plan_id :if-not-exists] [:tasks :plan_id]]})
@@ -168,8 +171,7 @@
     (db/with-connection
       db-path
       (fn [conn]
-        (let [plans (db/execute! conn {:select [:*] :from [:plans] :order-by [[:created_at :desc]]})]
-          (pprint/pprint plans))))))
+        (pprint/pprint (plan/get-all conn))))))
 
 (defn plan-create
   "Create a new plan"
@@ -178,13 +180,7 @@
     (db/with-connection
       db-path
       (fn [conn]
-        (let [result (db/execute-one!
-                      conn
-                      {:insert-into [:plans]
-                       :columns [:description :content]
-                       :values [[description content]]}
-                      {:return-keys true})]
-          (pprint/pprint result))))))
+        (pprint/pprint (plan/create conn description content))))))
 
 (defn plan-show
   "Show a specific plan"
@@ -193,10 +189,28 @@
     (db/with-connection
       db-path
       (fn [conn]
-        (let [plan (db/execute-one! conn {:select [:*] :from [:plans] :where [:= :id id]})
-              tasks (db/execute! conn {:select [:*] :from [:tasks] :where [:= :plan_id id]})
-              facts (db/execute! conn {:select [:*] :from [:facts] :where [:= :plan_id id]})]
-          (pprint/pprint {:plan plan :tasks tasks :facts facts}))))))
+        (pprint/pprint {:plan (plan/get-by-id conn id)
+                        :tasks (task/get-by-plan conn id)
+                        :facts (fact/get-by-plan conn id)})))))
+
+(defn plan-update
+  "Update a plan"
+  [{:keys [id description content completed]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [set-map (cond-> {:updated_at [:datetime "now"]}
+                        description (assoc :description description)
+                        content (assoc :content content)
+                        completed (assoc :completed (= "true" completed)))
+              result (db/execute-one!
+                      conn
+                      {:update [:plans]
+                       :set set-map
+                       :where [:= :id id]
+                       :returning [:*]})]
+          (pprint/pprint result))))))
 
 (defn task-list
   "List tasks for a plan"
@@ -208,6 +222,16 @@
         (let [tasks (db/execute! conn {:select [:*] :from [:tasks] :where [:= :plan_id plan-id] :order-by [[:created_at :desc]]})]
           (pprint/pprint tasks))))))
 
+(defn task-create*
+  "Internal: Create a new task given a connection. Returns the created task."
+  [conn plan-id description content parent-id]
+  (db/execute-one!
+   conn
+   {:insert-into [:tasks]
+    :columns [:plan_id :description :content :parent_id]
+    :values [[plan-id description content parent-id]]
+    :returning [:*]}))
+
 (defn task-create
   "Create a new task"
   [{:keys [plan-id description content parent-id]}]
@@ -215,12 +239,28 @@
     (db/with-connection
       db-path
       (fn [conn]
-        (let [result (db/execute-one!
+        (let [result (task-create* conn plan-id description content parent-id)]
+          (pprint/pprint result))))))
+
+(defn task-update
+  "Update a task"
+  [{:keys [id description content completed plan-id parent-id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [set-map (cond-> {:updated_at [:datetime "now"]}
+                        description (assoc :description description)
+                        content (assoc :content content)
+                        completed (assoc :completed (= "true" completed))
+                        plan-id (assoc :plan_id plan-id)
+                        parent-id (assoc :parent_id parent-id))
+              result (db/execute-one!
                       conn
-                      {:insert-into [:tasks]
-                       :columns [:plan_id :description :content :parent_id]
-                       :values [[plan-id description content parent-id]]}
-                      {:return-keys true})]
+                      {:update [:tasks]
+                       :set set-map
+                       :where [:= :id id]
+                       :returning [:*]})]
           (pprint/pprint result))))))
 
 (defn search
@@ -234,6 +274,30 @@
               tasks (db/search-tasks conn query)
               facts (db/search-facts conn query)]
           (pprint/pprint {:plans plans :tasks tasks :facts facts}))))))
+
+(defn plan-delete
+  "Delete a plan and all its tasks"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [tasks (db/execute! conn {:select [:id] :from [:tasks] :where [:= :plan_id id]})
+              task-count (count tasks)]
+          (db/execute! conn {:delete-from [:tasks] :where [:= :plan_id id]})
+          (db/execute! conn {:delete-from [:facts] :where [:= :plan_id id]})
+          (db/execute! conn {:delete-from [:plans] :where [:= :id id]})
+          (pprint/pprint {:deleted {:plan id :tasks task-count}}))))))
+
+(defn task-delete
+  "Delete a task"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (db/execute! conn {:delete-from [:tasks] :where [:= :id id]})
+        (pprint/pprint {:deleted {:task id}})))))
 
 ;; CLI definition
 
@@ -259,7 +323,18 @@
       {:command "show"
        :description "Show a specific plan"
        :opts [{:as "Plan ID" :option "id" :required true :type :int}]
-       :runs plan-show}]}
+       :runs plan-show}
+      {:command "update"
+       :description "Update a plan"
+       :opts [{:as "Plan ID" :option "id" :required true :type :int}
+              {:as "Description" :option "description" :short "d" :type :string}
+              {:as "Content" :option "content" :short "c" :type :string}
+              {:as "Completed" :option "completed" :type :string}]
+       :runs plan-update}
+      {:command "delete"
+       :description "Delete a plan and all its tasks"
+       :opts [{:as "Plan ID" :option "id" :required true :type :int}]
+       :runs plan-delete}]}
     {:command "task"
      :description "Task operations"
      :subcommands
@@ -273,7 +348,20 @@
               {:as "Description" :option "description" :short "d" :type :string :required true}
               {:as "Content" :option "content" :short "c" :type :string}
               {:as "Parent Task ID" :option "parent-id" :type :int}]
-       :runs task-create}]}
+       :runs task-create}
+      {:command "update"
+       :description "Update a task"
+       :opts [{:as "Task ID" :option "id" :required true :type :int}
+              {:as "Description" :option "description" :short "d" :type :string}
+              {:as "Content" :option "content" :short "c" :type :string}
+              {:as "Completed" :option "completed" :type :string}
+              {:as "Plan ID" :option "plan-id" :type :int}
+              {:as "Parent ID" :option "parent-id" :type :int}]
+       :runs task-update}
+      {:command "delete"
+       :description "Delete a task"
+       :opts [{:as "Task ID" :option "id" :required true :type :int}]
+       :runs task-delete}]}
     {:command "search"
      :description "Search across plans, tasks, and facts"
      :opts [{:as "Search query" :option "query" :short "q" :type :string :required true}]

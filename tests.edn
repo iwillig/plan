@@ -7,5 +7,4 @@
  :kaocha/fail-fast?                  true
  :kaocha/color?                      false
  :kaocha/reporter                    [kaocha.report/documentation]
- :kaocha/plugins                     [:kaocha.plugin/junit-xml
-                                      :kaocha.plugin/cloverage]}
+ :kaocha/plugins                     [:kaocha.plugin/junit-xml]}

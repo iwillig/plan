@@ -1,7 +1,7 @@
 # LLM Agent Instructions - Plan
 
-**Version:** 1.0
-**Last Updated:** 2025-01-19
+**Version:** 1.1
+**Last Updated:** 2025-01-29
 **Project:** plan
 **Shell:** fish (Friendly Interactive Shell)
 
@@ -10,7 +10,7 @@
 1. **Run `bb ci` before completing any task** - runs formatting, linting, and tests
 2. **Use `clj-nrepl-eval` when REPL is running** - never spawn new processes
 3. **Add type annotations** using `typed.clojure` for all new code
-4. **Follow Component pattern** for stateful resources
+4. **Pass connections explicitly** - use `db/with-connection` pattern
 5. **Never use `conn-from-db` in production** - pass connections, not snapshots
 
 See detailed sections below for complete guidelines.
@@ -22,19 +22,18 @@ See detailed sections below for complete guidelines.
 1. **Always run `bb ci` before completing any task** - runs
    formatting, linting, and tests
 2. **Add type annotations** using `typed.clojure` for all new records and public functions
-3. **Follow the Component pattern** for any new system components
-4. **Write tests** for new functionality in the corresponding `test/csb/` directory
-5. **Use clj-nrepl-eval when REPL is running** - never spawn new Clojure processes with `clojure` command
+3. **Write tests** for new functionality in the corresponding `test/plan/` directory
+4. **Use clj-nrepl-eval when REPL is running** - never spawn new Clojure processes with `clojure` command
+5. **Use `db/with-connection` pattern** for database access
 
 ### MUST NOT
 
 1. **Never commit code that fails `bb ci`**
-2. **Never use `def` for mutable state** - use atoms within components if needed
+2. **Never use `def` for mutable state** - use atoms if needed, passed explicitly
 3. **Never add dependencies without explicit user approval**
-4. **Never bypass Component lifecycle** - all stateful resources must be components
-5. **Never use `println` for logging** - use `mulog` instead
-6. **Never use emojis** - in code, comments, commit messages, documentation, or any output
-7. **Never use `clojure -M:...` command when REPL is running** - use clj-nrepl-eval instead
+4. **Never use `println` for logging** - use `cambium` instead
+5. **Never use emojis** - in code, comments, commit messages, documentation, or any output
+6. **Never use `clojure -M:...` command when REPL is running** - use clj-nrepl-eval instead
 
 ## Commands Reference
 
@@ -78,14 +77,14 @@ clj-nrepl-eval -p 7889 "(+ 1 2)"
 
 # Multi-line code - use heredoc with single quotes (prevents interpolation)
 clj-nrepl-eval -p 7889 <<'EOF'
-(require '[csb.api.pages.facts :as facts])
-(facts/render-page)
+(require '[plan.db :as db])
+(db/with-connection (plan.config/db-path) (fn [conn] (plan.db/execute! conn {:select [:*] :from [:plans]})))
 EOF
 
 # Multi-line with backslash continuation
 clj-nrepl-eval -p 7889 \
-  "(do (require 'csb.main :reload-all) \
-       (csb.main/restart-system))"
+  "(do (require 'plan.main :reload-all) \
+       (plan.main/create-schema! conn))"
 
 # Background job (note: fish uses 'set' not export, and & works the same)
 bb main > /tmp/server.log 2>&1 &
@@ -128,22 +127,19 @@ ALWAYS use `clj-nrepl-eval` to execute code.**
 clj-nrepl-eval -p 7889 "(+ 1 2)"
 
 # Require and reload namespaces
-clj-nrepl-eval -p 7889 "(require '[csb.api.pages.facts :as facts] :reload)"
+clj-nrepl-eval -p 7889 "(require '[plan.db :as db] :reload)"
 
 # Test functions
-clj-nrepl-eval -p 7889 "(facts/render-page)"
+clj-nrepl-eval -p 7889 "(plan.config/db-path)"
 
 # Run tests
-clj-nrepl-eval -p 7889 "(require 'kaocha.repl) (kaocha.repl/run 'csb.models-test)"
-
-# Check server state
-clj-nrepl-eval -p 7889 "(-> @csb.main/system :server)"
+clj-nrepl-eval -p 7889 "(require 'kaocha.repl) (kaocha.repl/run 'plan.main-test)"
 
 # Multi-line code block with heredoc (preferred for complex code)
 clj-nrepl-eval -p 7889 <<'EOF'
 (do
-  (require 'csb.main :reload-all)
-  (csb.main/restart-system))
+  (require 'plan.main :reload-all)
+  (plan.main/create-schema! conn))
 EOF
 ```
 
@@ -154,7 +150,7 @@ EOF
 clojure -M:jvm-base:dev -e "(some-function)"
 
 # ✗ WRONG - runs separate process, not connected to running system
-clojure -M:jvm-base:dev:test --focus csb.models-test
+clojure -M:jvm-base:dev:test --focus plan.main-test
 ```
 
 ## Code Style Guidelines
@@ -164,13 +160,15 @@ clojure -M:jvm-base:dev:test --focus csb.models-test
 Use sorted, aligned requires with single-space indent:
 
 ```clojure
-(ns csb.example
+(ns plan.example
   (:require
-   [com.stuartsierra.component :as c]
+   [clojure.string :as str]
+   [plan.config :as config]
+   [plan.db :as db]
    [typed.clojure :as t])
   (:import
    (java.io
-    PushbackReader)))
+    File)))
 
 (set! *warn-on-reflection* true)
 ```
@@ -191,27 +189,55 @@ Annotate BEFORE the definition:
 
 ;; For side-effecting functions (return nil)
 (t/ann log-event! [t/Str :-> nil])
-(defn log-event! [msg] (u/log ::event :message msg) nil)
+(defn log-event! [msg] (log/info msg) nil)
 
 ;; Type aliases
 (t/defalias Result (t/All [a] (t/U a Failure)))
 ```
 
-### Component Pattern (REQUIRED for stateful resources)
+### Database Access Pattern
+
+Use the `db/with-connection` helper to ensure connections are properly closed:
 
 ```clojure
-(t/ann-record ExampleComponent [config :- t/Str
-                                connection :- (t/Option SomeType)])
-(defrecord ExampleComponent [config connection]
-  c/Lifecycle
-  (start [this] (assoc this :connection (create-connection config)))
-  (stop [this]
-    (when connection (close-connection connection))
-    (assoc this :connection nil)))
+;; Good - connection is automatically closed
+(defn fetch-plans []
+  (db/with-connection (config/db-path)
+    (fn [conn]
+      (db/execute! conn {:select [:*] :from [:plans]}))))
 
-(t/ann new-example-component [t/Str :-> ExampleComponent])
-(defn new-example-component [config]
-  (map->ExampleComponent {:config config}))
+;; Good - for multiple operations on same connection
+(defn complex-operation []
+  (db/with-connection (config/db-path)
+    (fn [conn]
+      (let [plans (db/execute! conn {:select [:*] :from [:plans]})
+            tasks (db/execute! conn {:select [:*] :from [:tasks]})]
+        {:plans plans :tasks tasks}))))
+```
+
+### CLI Command Pattern (cli-matic)
+
+Command functions receive a map of parsed arguments:
+
+```clojure
+;; Define the command handler
+(defn my-command
+  "Handler for my command"
+  [{:keys [option1 option2]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection db-path
+      (fn [conn]
+        ;; Command logic here
+        (clojure.pprint/pprint result)))))
+
+;; Register in CLI definition
+(def cli-definition
+  {:app-name "plan"
+   :subcommands
+   [{:command "my-cmd"
+     :description "Does something"
+     :opts [{:as "Option 1" :option "option1" :short "o" :type :string}]
+     :runs my-command}]})
 ```
 
 ### Error Handling (Failjure)
@@ -226,21 +252,42 @@ Annotate BEFORE the definition:
   (handle-error user))
 ```
 
+### HoneySQL vs Raw SQL
+
+Use HoneySQL for standard queries, raw SQL for SQLite-specific features:
+
+```clojure
+;; HoneySQL for standard queries
+(db/execute! conn {:select [:*] :from [:plans] :where [:= :id 1]})
+
+;; Raw SQL for FTS5, virtual tables, triggers
+(db/execute! conn [:raw "CREATE VIRTUAL TABLE IF NOT EXISTS plans_fts USING fts5(...)"])
+```
 
 ## Test Patterns
 
 ```clojure
-(ns csb.feature-test
+(ns plan.feature-test
   (:require
-   [clojure.test :refer [deftest is testing]]
+   [clojure.test :refer [deftest is testing use-fixtures]]
+   [plan.db :as db]
+   [plan.main :as main]
+   [plan.test-helper :as helper]
    [typed.clojure :as t]))
 
+;; Use the db-fixture for database tests
+(use-fixtures :each helper/db-fixture)
+
 (deftest feature-works
-  (testing "specific behavior" (is (= expected actual))))
+  (testing "specific behavior"
+    (main/create-schema! helper/*conn*)
+    ;; Test code here
+    (is (= expected actual))))
 
 ;; Type checking test (include in every namespace test)
 (deftest type-check
-  (testing "types are valid" (is (t/check-ns-clj 'csb.feature))))
+  (testing "types are valid"
+    (is (t/check-ns-clj 'plan.feature))))
 ```
 
 ## Formatting Rules (cljstyle)
@@ -266,12 +313,58 @@ Annotate BEFORE the definition:
 
 | Type of code | Location |
 |--------------|----------|
-| New component | `src/csb/components/name.clj` |
-| Business logic | `src/csb/controllers.clj` |
-| Data shapes/types | `src/csb/models.clj` |
-| Routes | `src/csb/routes.clj` |
-| Type annotations for libs | `src/csb/annotations/` |
+| New namespace | `src/plan/feature.clj` |
+| CLI commands | `src/plan/main.clj` |
+| Database helpers | `src/plan/db.clj` |
+| Configuration | `src/plan/config.clj` |
+| Tests | `test/plan/feature_test.clj` |
+| Type annotations for libs | `src/plan/annotations/` |
+
+## Project Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PLAN_DB_PATH` | Override database file path | From config file |
+
+### Configuration File
+
+Location: `~/.config/plan/config.json`
+
+```json
+{
+  "db-path": "~/.local/share/plan/plan.db"
+}
+```
 
 ## Adding Dependencies
 
-1. **Get approval
+1. **Get approval first** - Never add dependencies without explicit user approval
+2. **Add to deps.edn** - Place in the appropriate section (:deps or :aliases)
+3. **Update lock files** - Run `clojure -P` to download and cache dependencies
+4. **Document usage** - Add a brief comment explaining why the dependency is needed
+5. **Run tests** - Ensure `bb ci` passes after adding
+
+Example:
+```clojure
+;; deps.edn
+{:deps
+ {;; ... existing deps ...
+  my.library/awesome-lib {:mvn/version "1.0.0"} ; For feature X
+  }}
+```
+
+## Database Schema
+
+The database schema is defined in `src/plan/main.clj`:
+
+- **Tables**: `plans`, `tasks`, `facts`
+- **FTS5 Tables**: `plans_fts`, `tasks_fts`, `facts_fts` (full-text search)
+- **Triggers**: Automatic FTS index maintenance on insert/update/delete
+
+When modifying schema:
+1. Update the schema definitions in `main.clj`
+2. Add migration logic if needed for existing databases
+3. Update tests to verify new schema elements
+4. Document changes in commit messages

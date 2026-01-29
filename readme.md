@@ -30,10 +30,14 @@ plan init
 plan plan list                           # List all plans
 plan plan create -d "Description" [-c "Content"]  # Create a new plan
 plan plan show --id 1                    # Show a specific plan with tasks and facts
+plan plan update --id 1 [-d "New desc"] [-c "New content"] [--completed true]  # Update a plan
+plan plan delete --id 1                  # Delete a plan (cascades to tasks)
 
 # Task operations
 plan task list --plan-id 1               # List tasks for a plan
 plan task create --plan-id 1 -d "Task" [-c "Content"] [--parent-id N]  # Create a new task
+plan task update --id 1 [-d "New desc"] [-c "Content"] [--completed true] [--plan-id 2] [--parent-id 3]  # Update a task
+plan task delete --id 1                  # Delete a task
 
 # Search (uses FTS5 for full-text search with prefix matching)
 plan search -q "query"                   # Search across plans, tasks, and facts
@@ -61,6 +65,21 @@ plan task create --plan-id 1 -d "Implement core features" -c "Include tests"
 
 # List tasks for a plan
 plan task list --plan-id 1
+
+# Mark a task as completed
+plan task update --id 1 --completed true
+
+# Update plan content
+plan plan update --id 1 -c "Updated content with **markdown**"
+
+# Move task to different plan
+plan task update --id 2 --plan-id 3
+
+# Delete a task
+plan task delete --id 5
+
+# Delete a plan (cascades to all tasks)
+plan plan delete --id 2
 
 # Search across all content
 plan search -q "CLI"

@@ -1,9 +1,21 @@
 (ns plan.config
   (:require
    [clojure.data.json :as json]
-   [clojure.java.io :as io]))
+   [clojure.java.io :as io]
+   [malli.core :as m]))
 
 (set! *warn-on-reflection* true)
+
+;; Malli schemas for configuration
+(def Config
+  "Schema for application configuration"
+  [:map
+   [:db-path :string]])
+
+(def ConfigFile
+  "Schema for config file content"
+  [:map
+   [:db-path {:optional true} :string]])
 
 (def default-config
   {:db-path "~/.local/share/plan/plan.db"})
@@ -51,7 +63,8 @@
   []
   (let [^java.io.File dir (io/file (expand-home config-dir))]
     (when-not (.exists dir)
-      (.mkdirs dir))))
+      (.mkdirs dir)))
+  nil)
 
 (defn save-config
   "Save configuration to the config file.
@@ -59,4 +72,13 @@
   [config]
   (ensure-config-dir)
   (let [config-path (expand-home config-file)]
-    (spit config-path (json/write-str config :escape-slash false))))
+    (spit config-path (json/write-str config :escape-slash false)))
+  nil)
+
+;; Malli function schemas - register only if not already registered
+(try
+  (m/=> load-config [:=> [:cat] Config])
+  (m/=> db-path [:=> [:cat] :string])
+  (m/=> ensure-config-dir [:=> [:cat] nil])
+  (m/=> save-config [:=> [:cat ConfigFile] nil])
+  (catch Exception _ nil))
