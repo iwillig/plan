@@ -2,6 +2,7 @@
   (:gen-class)
   (:require
    [cli-matic.core :as cli]
+   [clojure.pprint :as pprint]
    [plan.config :as config]
    [plan.db :as db]))
 
@@ -163,50 +164,76 @@
 (defn plan-list
   "List all plans"
   [_]
-  (println "Listing all plans...")
-  ;; TODO: Implement plan listing
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [plans (db/execute! conn {:select [:*] :from [:plans] :order-by [[:created_at :desc]]})]
+          (pprint/pprint plans))))))
 
 (defn plan-create
   "Create a new plan"
   [{:keys [description content]}]
-  (println (str "Creating plan: " description))
-  (when content
-    (println (str "Content: " content)))
-  ;; TODO: Implement plan creation
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [result (db/execute-one!
+                      conn
+                      {:insert-into [:plans]
+                       :columns [:description :content]
+                       :values [[description content]]}
+                      {:return-keys true})]
+          (pprint/pprint result))))))
 
 (defn plan-show
   "Show a specific plan"
   [{:keys [id]}]
-  (println (str "Showing plan: " id))
-  ;; TODO: Implement plan show
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [plan (db/execute-one! conn {:select [:*] :from [:plans] :where [:= :id id]})
+              tasks (db/execute! conn {:select [:*] :from [:tasks] :where [:= :plan_id id]})
+              facts (db/execute! conn {:select [:*] :from [:facts] :where [:= :plan_id id]})]
+          (pprint/pprint {:plan plan :tasks tasks :facts facts}))))))
 
 (defn task-list
   "List tasks for a plan"
   [{:keys [plan-id]}]
-  (println (str "Listing tasks for plan: " plan-id))
-  ;; TODO: Implement task listing
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [tasks (db/execute! conn {:select [:*] :from [:tasks] :where [:= :plan_id plan-id] :order-by [[:created_at :desc]]})]
+          (pprint/pprint tasks))))))
 
 (defn task-create
   "Create a new task"
   [{:keys [plan-id description content parent-id]}]
-  (println (str "Creating task for plan " plan-id ": " description))
-  (when content
-    (println (str "Content: " content)))
-  (when parent-id
-    (println (str "Parent task: " parent-id)))
-  ;; TODO: Implement task creation
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [result (db/execute-one!
+                      conn
+                      {:insert-into [:tasks]
+                       :columns [:plan_id :description :content :parent_id]
+                       :values [[plan-id description content parent-id]]}
+                      {:return-keys true})]
+          (pprint/pprint result))))))
 
 (defn search
   "Search across plans, tasks, and facts"
   [{:keys [query]}]
-  (println (str "Searching for: " query))
-  ;; TODO: Implement search using FTS
-  )
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [plans (db/search-plans conn query)
+              tasks (db/search-tasks conn query)
+              facts (db/search-facts conn query)]
+          (pprint/pprint {:plans plans :tasks tasks :facts facts}))))))
 
 ;; CLI definition
 

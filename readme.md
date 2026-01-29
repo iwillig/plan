@@ -20,21 +20,51 @@ PLAN_DB_PATH=/path/to/custom.db plan init
 
 ## Commands
 
+All commands output pretty-printed JSON/EDN data structures.
+
 ```bash
 # Initialize the database
 plan init
 
 # Plan operations
-plan list                           # List all plans
-plan create -d "Description"        # Create a new plan
-plan show --id 1                    # Show a specific plan
+plan plan list                           # List all plans
+plan plan create -d "Description" [-c "Content"]  # Create a new plan
+plan plan show --id 1                    # Show a specific plan with tasks and facts
 
 # Task operations
-task list --plan-id 1               # List tasks for a plan
-task create --plan-id 1 -d "Task"   # Create a new task
+plan task list --plan-id 1               # List tasks for a plan
+plan task create --plan-id 1 -d "Task" [-c "Content"] [--parent-id N]  # Create a new task
 
-# Search
-search -q "query"                   # Search across plans, tasks, and facts
+# Search (uses FTS5 for full-text search with prefix matching)
+plan search -q "query"                   # Search across plans, tasks, and facts
+```
+
+### Example Usage
+
+```bash
+# Initialize the database
+plan init
+
+# Create some plans
+plan plan create -d "Build a CLI tool" -c "Using Clojure and GraalVM"
+plan plan create -d "Write documentation"
+
+# List all plans
+plan plan list
+
+# Show plan details with tasks and facts
+plan plan show --id 1
+
+# Add tasks to a plan
+plan task create --plan-id 1 -d "Set up project structure"
+plan task create --plan-id 1 -d "Implement core features" -c "Include tests"
+
+# List tasks for a plan
+plan task list --plan-id 1
+
+# Search across all content
+plan search -q "CLI"
+plan search -q "implement features"
 ```
 
 ## Data Model
