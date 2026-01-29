@@ -9,7 +9,7 @@
 
 1. **Run `bb ci` before completing any task** - runs formatting, linting, and tests
 2. **Use `clj-nrepl-eval` when REPL is running** - never spawn new processes
-3. **Add type annotations** using `typed.clojure` for all new code
+3. **Write docstrings** for all public functions
 4. **Pass connections explicitly** - use `db/with-connection` pattern
 5. **Never use `conn-from-db` in production** - pass connections, not snapshots
 
@@ -21,7 +21,7 @@ See detailed sections below for complete guidelines.
 
 1. **Always run `bb ci` before completing any task** - runs
    formatting, linting, and tests
-2. **Add type annotations** using `typed.clojure` for all new records and public functions
+2. **Write docstrings** for all new records and public functions
 3. **Write tests** for new functionality in the corresponding `test/plan/` directory
 4. **Use clj-nrepl-eval when REPL is running** - never spawn new Clojure processes with `clojure` command
 5. **Use `db/with-connection` pattern** for database access
@@ -164,35 +164,12 @@ Use sorted, aligned requires with single-space indent:
   (:require
    [clojure.string :as str]
    [plan.config :as config]
-   [plan.db :as db]
-   [typed.clojure :as t])
+   [plan.db :as db])
   (:import
    (java.io
     File)))
 
 (set! *warn-on-reflection* true)
-```
-
-### Type Annotations
-
-Annotate BEFORE the definition:
-
-```clojure
-;; For records
-(t/ann-record Database [db-path :- t/Str
-                        connection :- t/Any])
-(defrecord Database [db-path connection] ...)
-
-;; For functions
-(t/ann process-data [t/Str t/Int :-> t/Bool])
-(defn process-data [name count] (pos? count))
-
-;; For side-effecting functions (return nil)
-(t/ann log-event! [t/Str :-> nil])
-(defn log-event! [msg] (log/info msg) nil)
-
-;; Type aliases
-(t/defalias Result (t/All [a] (t/U a Failure)))
 ```
 
 ### Database Access Pattern
@@ -272,8 +249,7 @@ Use HoneySQL for standard queries, raw SQL for SQLite-specific features:
    [clojure.test :refer [deftest is testing use-fixtures]]
    [plan.db :as db]
    [plan.main :as main]
-   [plan.test-helper :as helper]
-   [typed.clojure :as t]))
+   [plan.test-helper :as helper]))
 
 ;; Use the db-fixture for database tests
 (use-fixtures :each helper/db-fixture)
@@ -283,11 +259,6 @@ Use HoneySQL for standard queries, raw SQL for SQLite-specific features:
     (main/create-schema! helper/*conn*)
     ;; Test code here
     (is (= expected actual))))
-
-;; Type checking test (include in every namespace test)
-(deftest type-check
-  (testing "types are valid"
-    (is (t/check-ns-clj 'plan.feature))))
 ```
 
 ## Formatting Rules (cljstyle)
@@ -295,19 +266,6 @@ Use HoneySQL for standard queries, raw SQL for SQLite-specific features:
 - List indent: 1 space, namespace indent: 1 space
 - Inline comments: `; ` prefix (space after semicolon)
 - Run `bb fmt` to auto-fix
-
-## Common Type Annotations
-
-| Type | Meaning |
-|------|---------|
-| `t/Int` | Integer |
-| `t/Str` | String |
-| `t/Bool` | Boolean |
-| `t/Any` | Any type (escape hatch) |
-| `[A :-> B]` | Function A to B |
-| `(t/Vec X)` | Vector of X |
-| `(t/Map K V)` | Map from K to V |
-| `(t/Option X)` | X or nil |
 
 ## Where to Put New Code
 
@@ -318,7 +276,6 @@ Use HoneySQL for standard queries, raw SQL for SQLite-specific features:
 | Database helpers | `src/plan/db.clj` |
 | Configuration | `src/plan/config.clj` |
 | Tests | `test/plan/feature_test.clj` |
-| Type annotations for libs | `src/plan/annotations/` |
 
 ## Project Configuration
 

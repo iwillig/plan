@@ -4,8 +4,7 @@
    [clj-reload.core :as reload]
    [clojure.repl :refer [doc]]
    [io.aviso.repl :as repl]
-   [kaocha.repl :as k]
-   [typed.clojure :as t]))
+   [kaocha.repl :as k]))
 
 (repl/install-pretty-exceptions)
 
@@ -23,12 +22,6 @@
   (-> (clj-kondo/run! {:lint ["src" "test" "dev"]})
       (clj-kondo/print!)))
 
-(defn type-check
-  "Checks the types using Clojure typed Clojure"
-  []
-  (t/check-dir-clj "src"))
-
 (println (doc k/run))
 (println (doc reload))
 (println (doc lint))
-(println (doc type-check))

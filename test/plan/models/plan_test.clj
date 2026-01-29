@@ -12,6 +12,7 @@
   (testing "Plan schema validates correct data"
     (is (m/validate plan/Plan
                     {:id 1
+                     :name "test-plan"
                      :description "Test"
                      :content "Content"
                      :completed false
@@ -20,7 +21,8 @@
   (testing "Plan schema allows nil for optional fields"
     (is (m/validate plan/Plan
                     {:id nil
-                     :description "Test"
+                     :name "test-plan"
+                     :description nil
                      :content nil
                      :completed true
                      :created_at nil
@@ -29,8 +31,9 @@
 (deftest create-test
   (testing "create returns a plan with generated fields"
     (main/create-schema! helper/*conn*)
-    (let [result (plan/create helper/*conn* "Test plan" "Test content")]
+    (let [result (plan/create helper/*conn* "test-plan-1" "Test plan" "Test content")]
       (is (some? result))
+      (is (= "test-plan-1" (:name result)))
       (is (= "Test plan" (:description result)))
       (is (= "Test content" (:content result)))
       (is (number? (:id result)))
@@ -38,18 +41,20 @@
       (is (some? (:created_at result)))
       (is (some? (:updated_at result)))))
 
-  (testing "create handles nil content"
+  (testing "create handles nil description and content"
     (main/create-schema! helper/*conn*)
-    (let [result (plan/create helper/*conn* "Plan with no content" nil)]
-      (is (= "Plan with no content" (:description result)))
+    (let [result (plan/create helper/*conn* "test-plan-2" nil nil)]
+      (is (= "test-plan-2" (:name result)))
+      (is (nil? (:description result)))
       (is (nil? (:content result))))))
 
 (deftest get-by-id-test
   (testing "get-by-id returns plan when found"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Test" nil)
+    (let [created (plan/create helper/*conn* "test-plan-get" "Test" nil)
           fetched (plan/get-by-id helper/*conn* (:id created))]
       (is (= (:id created) (:id fetched)))
+      (is (= "test-plan-get" (:name fetched)))
       (is (= "Test" (:description fetched)))))
 
   (testing "get-by-id returns nil when not found"
@@ -59,15 +64,15 @@
 (deftest get-all-test
   (testing "get-all returns all plans ordered by created_at desc"
     (main/create-schema! helper/*conn*)
-    (plan/create helper/*conn* "Plan 1" nil)
+    (plan/create helper/*conn* "plan-1" "Plan 1" nil)
     (Thread/sleep 10)
-    (plan/create helper/*conn* "Plan 2" nil)
+    (plan/create helper/*conn* "plan-2" "Plan 2" nil)
     (Thread/sleep 10)
-    (plan/create helper/*conn* "Plan 3" nil)
+    (plan/create helper/*conn* "plan-3" "Plan 3" nil)
     (let [plans (plan/get-all helper/*conn*)]
       (is (= 3 (count plans)))
-      (is (= "Plan 3" (:description (first plans))))
-      (is (= "Plan 1" (:description (last plans)))))))
+      (is (= "plan-3" (:name (first plans))))
+      (is (= "plan-1" (:name (last plans)))))))
 
 (deftest get-all-empty-test
   (testing "get-all returns empty vector when no plans"
@@ -77,21 +82,22 @@
 (deftest update-test
   (testing "update modifies plan fields"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Original" "Original content")
+    (let [created (plan/create helper/*conn* "original-1" "Original" "Original content")
           updated (plan/update helper/*conn* (:id created) {:description "Updated"})]
       (is (= "Updated" (:description updated)))
       (is (= "Original content" (:content updated)))))
 
   (testing "update can modify multiple fields"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Original" "Original content")
-          updated (plan/update helper/*conn* (:id created) {:description "New" :content "New content"})]
+    (let [created (plan/create helper/*conn* "original-2" "Original" "Original content")
+          updated (plan/update helper/*conn* (:id created) {:name "updated" :description "New" :content "New content"})]
+      (is (= "updated" (:name updated)))
       (is (= "New" (:description updated)))
       (is (= "New content" (:content updated)))))
 
   (testing "update handles completed status"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Test" nil)
+    (let [created (plan/create helper/*conn* "test-completed" "Test" nil)
           updated (plan/update helper/*conn* (:id created) {:completed true})]
       (is (= true (:completed updated)))))
 
@@ -101,13 +107,13 @@
 
   (testing "update returns nil for empty updates"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Test" nil)]
+    (let [created (plan/create helper/*conn* "test-empty" "Test" nil)]
       (is (nil? (plan/update helper/*conn* (:id created) {}))))))
 
 (deftest delete-test
   (testing "delete removes plan and returns true"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "To delete" nil)]
+    (let [created (plan/create helper/*conn* "plan-to-delete" "To delete" nil)]
       (is (plan/delete helper/*conn* (:id created)))
       (is (nil? (plan/get-by-id helper/*conn* (:id created))))))
 
@@ -118,13 +124,13 @@
 (deftest mark-completed-test
   (testing "mark-completed sets completed status"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Test" nil)
+    (let [created (plan/create helper/*conn* "test-complete" "Test" nil)
           completed (plan/mark-completed helper/*conn* (:id created) true)]
       (is (= true (:completed completed)))))
 
   (testing "mark-completed can un-complete"
     (main/create-schema! helper/*conn*)
-    (let [created (plan/create helper/*conn* "Test" nil)
+    (let [created (plan/create helper/*conn* "test-uncomplete" "Test" nil)
           _ (plan/mark-completed helper/*conn* (:id created) true)
           uncompleted (plan/mark-completed helper/*conn* (:id created) false)]
       (is (= false (:completed uncompleted))))))
@@ -132,10 +138,10 @@
 (deftest search-test
   (testing "search finds matching plans"
     (main/create-schema! helper/*conn*)
-    (plan/create helper/*conn* "Project planning" "Content about planning")
+    (plan/create helper/*conn* "project-planning" "Project planning" "Content about planning")
     (let [results (plan/search helper/*conn* "plan")]
       (is (= 1 (count results)))
-      (is (= "Project planning" (:description (first results))))))
+      (is (= "project-planning" (:name (first results))))))
 
   (testing "search returns empty for no matches"
     (main/create-schema! helper/*conn*)

@@ -36,21 +36,23 @@
   (testing "execute-one! with single argument"
     (main/create-schema! helper/*conn*)
     (db/execute! helper/*conn* {:insert-into :plans
-                                :columns [:description :content]
-                                :values [["Test" "Content"]]})
+                                :columns [:name :description :content]
+                                :values [["test-1" "Test" "Content"]]})
     (let [result (db/execute-one! helper/*conn* {:select [:*] :from [:plans] :where [:= :id 1]})]
       (is (some? result))
+      (is (= "test-1" (:name result)))
       (is (= "Test" (:description result)))))
 
   (testing "execute-one! with opts"
     (main/create-schema! helper/*conn*)
     (let [result (db/execute-one! helper/*conn*
                                   {:insert-into :plans
-                                   :columns [:description]
-                                   :values [["Test"]]
+                                   :columns [:name :description]
+                                   :values [["test-2" "Test"]]
                                    :returning [:*]}
                                   {:return-keys true})]
       (is (some? result))
+      (is (= "test-2" (:name result)))
       (is (= "Test" (:description result))))))
 
 (deftest format-fts-query-test
@@ -67,11 +69,11 @@
   (testing "search finds matching plans"
     (main/create-schema! helper/*conn*)
     (db/execute! helper/*conn* {:insert-into :plans
-                                :columns [:description :content]
-                                :values [["Project planning" "Content about planning"]]})
+                                :columns [:name :description :content]
+                                :values [["project-planning" "Project planning" "Content about planning"]]})
     (let [results (db/search-plans helper/*conn* "plan")]
       (is (= 1 (count results)))
-      (is (= "Project planning" (:description (first results))))))
+      (is (= "project-planning" (:name (first results))))))
 
   (testing "search returns empty for no matches"
     (main/create-schema! helper/*conn*)
@@ -81,31 +83,31 @@
 (deftest search-tasks-test
   (testing "search finds matching tasks"
     (main/create-schema! helper/*conn*)
-    (db/execute! helper/*conn* {:insert-into :plans :columns [:description] :values [["Plan"]]})
+    (db/execute! helper/*conn* {:insert-into :plans :columns [:name :description] :values [["plan" "Plan"]]})
     (db/execute! helper/*conn* {:insert-into :tasks
-                                :columns [:plan_id :description :content]
-                                :values [[1 "Important task" "Task content"]]})
+                                :columns [:plan_id :name :description :content]
+                                :values [[1 "important-task" "Important task" "Task content"]]})
     (let [results (db/search-tasks helper/*conn* "task")]
       (is (= 1 (count results)))
-      (is (= "Important task" (:description (first results)))))))
+      (is (= "important-task" (:name (first results)))))))
 
 (deftest search-facts-test
   (testing "search finds matching facts"
     (main/create-schema! helper/*conn*)
-    (db/execute! helper/*conn* {:insert-into :plans :columns [:description] :values [["Plan"]]})
+    (db/execute! helper/*conn* {:insert-into :plans :columns [:name :description] :values [["plan" "Plan"]]})
     (db/execute! helper/*conn* {:insert-into :facts
-                                :columns [:plan_id :description :content]
-                                :values [[1 "Key fact" "Fact content"]]})
+                                :columns [:plan_id :name :description :content]
+                                :values [[1 "key-fact" "Key fact" "Fact content"]]})
     (let [results (db/search-facts helper/*conn* "fact")]
       (is (= 1 (count results)))
-      (is (= "Key fact" (:description (first results)))))))
+      (is (= "key-fact" (:name (first results)))))))
 
 (deftest highlight-plans-test
   (testing "highlight adds markup to matches"
     (main/create-schema! helper/*conn*)
     (db/execute! helper/*conn* {:insert-into :plans
-                                :columns [:description :content]
-                                :values [["Project planning" "Content about planning"]]})
+                                :columns [:name :description :content]
+                                :values [["project-planning" "Project planning" "Content about planning"]]})
     (let [results (db/highlight-plans helper/*conn* "plan")]
       (is (= 1 (count results)))
       (let [highlighted (:description_highlight (first results))]
@@ -120,10 +122,10 @@
 (deftest highlight-tasks-test
   (testing "highlight adds markup to task matches"
     (main/create-schema! helper/*conn*)
-    (db/execute! helper/*conn* {:insert-into :plans :columns [:description] :values [["Plan"]]})
+    (db/execute! helper/*conn* {:insert-into :plans :columns [:name :description] :values [["plan" "Plan"]]})
     (db/execute! helper/*conn* {:insert-into :tasks
-                                :columns [:plan_id :description :content]
-                                :values [[1 "Important task" "Task content"]]})
+                                :columns [:plan_id :name :description :content]
+                                :values [[1 "important-task" "Important task" "Task content"]]})
     (let [results (db/highlight-tasks helper/*conn* "task")]
       (is (= 1 (count results)))
       (let [highlighted (:description_highlight (first results))]
@@ -133,10 +135,10 @@
 (deftest highlight-facts-test
   (testing "highlight adds markup to fact matches"
     (main/create-schema! helper/*conn*)
-    (db/execute! helper/*conn* {:insert-into :plans :columns [:description] :values [["Plan"]]})
+    (db/execute! helper/*conn* {:insert-into :plans :columns [:name :description] :values [["plan" "Plan"]]})
     (db/execute! helper/*conn* {:insert-into :facts
-                                :columns [:plan_id :description :content]
-                                :values [[1 "Key fact" "Fact content"]]})
+                                :columns [:plan_id :name :description :content]
+                                :values [[1 "key-fact" "Key fact" "Fact content"]]})
     (let [results (db/highlight-facts helper/*conn* "fact")]
       (is (= 1 (count results)))
       (let [highlighted (:description_highlight (first results))]
@@ -147,8 +149,8 @@
   (testing "FTS index is updated when plan is updated"
     (main/create-schema! helper/*conn*)
     (db/execute! helper/*conn* {:insert-into :plans
-                                :columns [:description :content]
-                                :values [["Oldunique description" "Content"]]})
+                                :columns [:name :description :content]
+                                :values [["plan" "Oldunique description" "Content"]]})
     ;; Update the plan - change description to something completely different
     (db/execute! helper/*conn* {:update :plans
                                 :set {:description "Newunique description"}
@@ -165,8 +167,8 @@
   (testing "FTS index is updated when plan is deleted"
     (main/create-schema! helper/*conn*)
     (db/execute! helper/*conn* {:insert-into :plans
-                                :columns [:description :content]
-                                :values [["Delete me" "Content"]]})
+                                :columns [:name :description :content]
+                                :values [["delete-me" "Delete me" "Content"]]})
     ;; Verify it exists in search
     (is (= 1 (count (db/search-plans helper/*conn* "delete"))))
     ;; Delete the plan

@@ -28,15 +28,17 @@ plan init
 
 # Plan operations
 plan plan list                           # List all plans
-plan plan create -d "Description" [-c "Content"]  # Create a new plan
+plan plan create -d "Description" -c "Content"  # Create a new plan
 plan plan show --id 1                    # Show a specific plan with tasks and facts
-plan plan update --id 1 [-d "New desc"] [-c "New content"] [--completed true]  # Update a plan
+plan plan update --id 1 -d "New desc" -c "New content" --completed true  # Update a plan
 plan plan delete --id 1                  # Delete a plan (cascades to tasks)
+plan plan export --id 1 -f "file.md"     # Export plan to markdown file
+plan plan import -f "file.md"            # Import plan from markdown file
 
 # Task operations
 plan task list --plan-id 1               # List tasks for a plan
-plan task create --plan-id 1 -d "Task" [-c "Content"] [--parent-id N]  # Create a new task
-plan task update --id 1 [-d "New desc"] [-c "Content"] [--completed true] [--plan-id 2] [--parent-id 3]  # Update a task
+plan task create --plan-id 1 -d "Task" -c "Content" --parent-id N  # Create a new task
+plan task update --id 1 -d "New desc" -c "Content" --completed true --plan-id 2 --parent-id 3  # Update a task
 plan task delete --id 1                  # Delete a task
 
 # Search (uses FTS5 for full-text search with prefix matching)
@@ -84,6 +86,17 @@ plan plan delete --id 2
 # Search across all content
 plan search -q "CLI"
 plan search -q "implement features"
+
+# Export a plan to markdown
+plan plan export --id 1 -f "my-plan.md"
+
+# Import a plan from markdown
+plan plan import -f "my-plan.md"
+
+# Full round-trip workflow
+plan plan export --id 1 -f "backup.md"
+plan plan delete --id 1
+plan plan import -f "backup.md"
 ```
 
 ## Data Model
@@ -141,3 +154,49 @@ making the same mistake twice.
 - content: string (full text, searchable)
 - created_at: timestamp (default: current_timestamp)
 - updated_at: timestamp
+
+## Markdown Export/Import Format
+
+Plans can be exported to and imported from markdown files with YAML front matter.
+This format is compatible with CommonMark parsers and works with GraalVM native-image.
+
+### Example Markdown File
+
+```markdown
+---
+plan_name: Implement User Authentication
+plan_description: Add login/logout functionality
+plan_completed: false
+task_0_name: Create users table
+task_0_description: Set up database schema
+task_0_completed: true
+task_1_name: Implement login endpoint
+task_1_completed: false
+fact_0_name: Security Requirements
+fact_0_description: OAuth2 and JWT requirements
+fact_0_content: |
+  - Use OAuth2 for third-party auth
+  - JWT tokens with 24h expiry
+  - Refresh token rotation
+---
+
+# User Authentication Implementation
+
+This plan covers the implementation of user authentication
+using OAuth2 and JWT tokens.
+
+## Tasks
+
+- [x] Create users table
+- [ ] Implement login endpoint
+```
+
+### Format Notes
+
+- Uses flat key-value pairs in YAML front matter (CommonMark compatible)
+- Plan fields use `plan_` prefix
+- Task fields use `task_N_` prefix (e.g., `task_0_name`, `task_1_name`)
+- Fact fields use `fact_N_` prefix (e.g., `fact_0_name`)
+- Multiline content uses YAML literal block syntax (`|`)
+- Boolean values are normalized ("true"/"false" strings become actual booleans)
+- The body content after the front matter is the plan's content field

@@ -12,8 +12,9 @@
   [:map
    [:id [:maybe :int]]
    [:plan_id :int]
+   [:name :string]
    [:parent_id [:maybe :int]]
-   [:description :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]
    [:completed :boolean]
    [:created_at [:maybe :string]]
@@ -23,90 +24,92 @@
 (def TaskCreate
   [:map
    [:plan_id :int]
-   [:description :string]
+   [:name :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]
    [:parent_id [:maybe :int]]])
 
 ;; Schema for task updates
 (def TaskUpdate
   [:map
-   [:description {:optional true} :string]
+   [:description {:optional true} [:maybe :string]]
    [:content {:optional true} [:maybe :string]]
    [:completed {:optional true} :boolean]
+   [:name {:optional true} :string]
    [:plan_id {:optional true} :int]
    [:parent_id {:optional true} [:maybe :int]]])
+
+(defn- convert-boolean [task]
+  (when task
+    (clojure.core/update task :completed #(if (number? %) (not= 0 %) %))))
 
 (defn create
   "Create a new task for a plan.
    Returns the created task with generated id and timestamps."
-  [conn plan-id description content parent-id]
-  (let [result (db/execute-one!
-                conn
-                {:insert-into :tasks
-                 :columns [:plan_id :description :content :parent_id :completed]
-                 :values [[plan-id description content parent-id false]]
-                 :returning [:*]})]
-    ;; SQLite stores booleans as integers (0/1), convert back to boolean
-    (when result
-      (clojure.core/update result :completed #(if (number? %) (not= 0 %) %)))))
+  [conn plan-id name description content parent-id]
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:insert-into :tasks
+     :columns [:plan_id :name :description :content :parent_id :completed]
+     :values [[plan-id name description content parent-id false]]
+     :returning [:*]})))
 
 (defn get-by-id
   "Fetch a task by its id. Returns nil if not found."
   [conn id]
-  (db/execute-one!
-   conn
-   {:select [:*]
-    :from [:tasks]
-    :where [:= :id id]}))
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:select [:*]
+     :from [:tasks]
+     :where [:= :id id]})))
 
 (defn get-by-plan
   "Fetch all tasks for a plan, ordered by created_at descending, then id descending."
   [conn plan-id]
-  (db/execute!
-   conn
-   {:select [:*]
-    :from [:tasks]
-    :where [:= :plan_id plan-id]
-    :order-by [[:created_at :desc] [:id :desc]]}))
+  (map convert-boolean
+       (db/execute!
+        conn
+        {:select [:*]
+         :from [:tasks]
+         :where [:= :plan_id plan-id]
+         :order-by [[:created_at :desc] [:id :desc]]})))
 
 (defn get-children
   "Fetch all child tasks for a parent task, ordered by created_at descending, then id descending."
   [conn parent-id]
-  (db/execute!
-   conn
-   {:select [:*]
-    :from [:tasks]
-    :where [:= :parent_id parent-id]
-    :order-by [[:created_at :desc] [:id :desc]]}))
+  (map convert-boolean
+       (db/execute!
+        conn
+        {:select [:*]
+         :from [:tasks]
+         :where [:= :parent_id parent-id]
+         :order-by [[:created_at :desc] [:id :desc]]})))
 
 (defn get-all
   "Fetch all tasks, ordered by created_at descending, then id descending."
   [conn]
-  (db/execute!
-   conn
-   {:select [:*]
-    :from [:tasks]
-    :order-by [[:created_at :desc] [:id :desc]]}))
+  (map convert-boolean
+       (db/execute!
+        conn
+        {:select [:*]
+         :from [:tasks]
+         :order-by [[:created_at :desc] [:id :desc]]})))
 
 (defn update
   "Update a task's fields. Returns the updated task or nil if not found."
   [conn id updates]
-  (let [set-clause (cond-> {}
-                     (contains? updates :description) (assoc :description (:description updates))
-                     (contains? updates :content) (assoc :content (:content updates))
-                     (contains? updates :completed) (assoc :completed (if (:completed updates) 1 0))
-                     (contains? updates :plan_id) (assoc :plan_id (:plan_id updates))
-                     (contains? updates :parent_id) (assoc :parent_id (:parent_id updates)))]
+  (let [set-clause (cond-> (select-keys updates [:name :description :content :plan_id :parent_id])
+                     (contains? updates :completed) (assoc :completed (if (:completed updates) 1 0)))]
     (when (seq set-clause)
-      (let [result (db/execute-one!
-                    conn
-                    {:update :tasks
-                     :set set-clause
-                     :where [:= :id id]
-                     :returning [:*]})]
-        ;; SQLite stores booleans as integers (0/1), convert back to boolean
-        (when result
-          (clojure.core/update result :completed #(if (number? %) (not= 0 %) %)))))))
+      (convert-boolean
+       (db/execute-one!
+        conn
+        {:update :tasks
+         :set set-clause
+         :where [:= :id id]
+         :returning [:*]})))))
 
 (defn delete
   "Delete a task by id. Returns true if a task was deleted."
@@ -140,7 +143,7 @@
 
 ;; Malli function schemas - register at end to avoid reload issues
 (try
-  (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :int]] Task])
+  (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string] [:maybe :int]] Task])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Task]])
   (m/=> get-by-plan [:=> [:cat :any :int] [:sequential Task]])
   (m/=> get-children [:=> [:cat :any :int] [:sequential Task]])

@@ -11,7 +11,8 @@
 (def Plan
   [:map
    [:id [:maybe :int]]
-   [:description :string]
+   [:name :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]
    [:completed :boolean]
    [:created_at [:maybe :string]]
@@ -20,65 +21,67 @@
 ;; Schema for plan creation (id/timestamps are optional)
 (def PlanCreate
   [:map
-   [:description :string]
+   [:name :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]])
 
 ;; Schema for plan updates (all fields optional)
 (def PlanUpdate
   [:map
-   [:description {:optional true} :string]
+   [:name {:optional true} :string]
+   [:description {:optional true} [:maybe :string]]
    [:content {:optional true} [:maybe :string]]
    [:completed {:optional true} :boolean]])
 
+(defn- convert-boolean [plan]
+  (when plan
+    (clojure.core/update plan :completed #(if (number? %) (not= 0 %) %))))
+
 (defn create
-  "Create a new plan with the given description and content.
+  "Create a new plan with the given name, description and content.
    Returns the created plan with generated id and timestamps."
-  [conn description content]
-  (let [result (db/execute-one!
-                conn
-                {:insert-into :plans
-                 :columns [:description :content :completed]
-                 :values [[description content false]]
-                 :returning [:*]})]
-    ;; SQLite stores booleans as integers (0/1), convert back to boolean
-    (when result
-      (clojure.core/update result :completed #(if (number? %) (not= 0 %) %)))))
+  [conn name description content]
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:insert-into :plans
+     :columns [:name :description :content :completed]
+     :values [[name description content false]]
+     :returning [:*]})))
 
 (defn get-by-id
   "Fetch a plan by its id. Returns nil if not found."
   [conn id]
-  (db/execute-one!
-   conn
-   {:select [:*]
-    :from [:plans]
-    :where [:= :id id]}))
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:select [:*]
+     :from [:plans]
+     :where [:= :id id]})))
 
 (defn get-all
   "Fetch all plans, ordered by created_at descending, then id descending."
   [conn]
-  (db/execute!
-   conn
-   {:select [:*]
-    :from [:plans]
-    :order-by [[:created_at :desc] [:id :desc]]}))
+  (map convert-boolean
+       (db/execute!
+        conn
+        {:select [:*]
+         :from [:plans]
+         :order-by [[:created_at :desc] [:id :desc]]})))
 
 (defn update
   "Update a plan's fields. Returns the updated plan or nil if not found."
   [conn id updates]
-  (let [set-clause (cond-> {}
-                     (contains? updates :description) (assoc :description (:description updates))
-                     (contains? updates :content) (assoc :content (:content updates))
+  (let [set-clause (cond-> (select-keys updates [:name :description :content])
                      (contains? updates :completed) (assoc :completed (if (:completed updates) 1 0)))]
     (when (seq set-clause)
-      (let [result (db/execute-one!
-                    conn
-                    {:update :plans
-                     :set set-clause
-                     :where [:= :id id]
-                     :returning [:*]})]
-        ;; SQLite stores booleans as integers (0/1), convert back to boolean
-        (when result
-          (clojure.core/update result :completed #(if (number? %) (not= 0 %) %)))))))
+      (convert-boolean
+       (db/execute-one!
+        conn
+        {:update :plans
+         :set set-clause
+         :where [:= :id id]
+         :returning [:*]})))))
 
 (defn delete
   "Delete a plan by id. Returns true if a plan was deleted."
@@ -102,7 +105,7 @@
 
 ;; Malli function schemas - register at end to avoid reload issues
 (try
-  (m/=> create [:=> [:cat :any :string [:maybe :string]] Plan])
+  (m/=> create [:=> [:cat :any :string [:maybe :string] [:maybe :string]] Plan])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Plan]])
   (m/=> get-all [:=> [:cat :any] [:sequential Plan]])
   (m/=> update [:=> [:cat :any :int PlanUpdate] [:maybe Plan]])

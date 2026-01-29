@@ -12,7 +12,8 @@
   [:map
    [:id [:maybe :int]]
    [:plan_id :int]
-   [:description :string]
+   [:name :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]
    [:created_at [:maybe :string]]
    [:updated_at [:maybe :string]]])
@@ -21,24 +22,26 @@
 (def FactCreate
   [:map
    [:plan_id :int]
-   [:description :string]
+   [:name :string]
+   [:description [:maybe :string]]
    [:content [:maybe :string]]])
 
 ;; Schema for fact updates
 (def FactUpdate
   [:map
-   [:description {:optional true} :string]
+   [:name {:optional true} :string]
+   [:description {:optional true} [:maybe :string]]
    [:content {:optional true} [:maybe :string]]])
 
 (defn create
   "Create a new fact for a plan.
    Returns the created fact with generated id and timestamps."
-  [conn plan-id description content]
+  [conn plan-id name description content]
   (db/execute-one!
    conn
    {:insert-into :facts
-    :columns [:plan_id :description :content]
-    :values [[plan-id description content]]
+    :columns [:plan_id :name :description :content]
+    :values [[plan-id name description content]]
     :returning [:*]}))
 
 (defn get-by-id
@@ -72,9 +75,7 @@
 (defn update
   "Update a fact's fields. Returns the updated fact or nil if not found."
   [conn id updates]
-  (let [set-clause (cond-> {}
-                     (contains? updates :description) (assoc :description (:description updates))
-                     (contains? updates :content) (assoc :content (:content updates)))]
+  (let [set-clause (select-keys updates [:name :description :content])]
     (when (seq set-clause)
       (db/execute-one!
        conn
@@ -110,7 +111,7 @@
 
 ;; Malli function schemas - register at end to avoid reload issues
 (try
-  (m/=> create [:=> [:cat :any :int :string [:maybe :string]] Fact])
+  (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string]] Fact])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Fact]])
   (m/=> get-by-plan [:=> [:cat :any :int] [:sequential Fact]])
   (m/=> get-all [:=> [:cat :any] [:sequential Fact]])
