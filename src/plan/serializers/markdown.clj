@@ -4,10 +4,7 @@
    Designed for GraalVM native-image compatibility."
   (:require
    [clojure.string :as str]
-   [plan.markdown :as md])
-  (:import
-   (org.commonmark.parser
-    Parser)))
+   [plan.markdown :as md]))
 
 (set! *warn-on-reflection* true)
 
@@ -160,10 +157,9 @@
   "Deserialize a markdown document to plan data.
    Returns a map with :plan, :tasks, :facts keys."
   [^String markdown-text]
-  (let [parser (md/create-parser)
-        document (.parse ^Parser parser markdown-text)
-        front-matter (md/extract-yaml-front-matter document)
-        body-content (md/extract-body-content markdown-text)]
+  (let [result (md/parse-with-front-matter markdown-text)
+        front-matter (:front-matter result)
+        body-content (:body result)]
     {:plan (assoc (decode-plan-fields front-matter)
                   :content body-content)
      :tasks (decode-task-fields front-matter)
@@ -190,9 +186,8 @@
    Returns true if the front matter contains required plan fields."
   [markdown-text]
   (try
-    (let [parser (md/create-parser)
-          document (.parse ^Parser parser markdown-text)
-          front-matter (md/extract-yaml-front-matter document)]
+    (let [result (md/parse-with-front-matter markdown-text)
+          front-matter (:front-matter result)]
       (and (map? front-matter)
            (string? (:plan_name front-matter))
            (seq (:plan_name front-matter))))
@@ -205,25 +200,22 @@
 (defn get-plan-metadata
   "Extract just the plan metadata from markdown (without tasks/facts)."
   [markdown-text]
-  (let [parser (md/create-parser)
-        document (.parse ^Parser parser markdown-text)
-        front-matter (md/extract-yaml-front-matter document)
-        body-content (md/extract-body-content markdown-text)]
+  (let [result (md/parse-with-front-matter markdown-text)
+        front-matter (:front-matter result)
+        body-content (:body result)]
     (assoc (decode-plan-fields front-matter)
            :content body-content)))
 
 (defn count-tasks
   "Count the number of tasks in the markdown."
   [markdown-text]
-  (let [parser (md/create-parser)
-        document (.parse ^Parser parser markdown-text)
-        front-matter (md/extract-yaml-front-matter document)]
+  (let [result (md/parse-with-front-matter markdown-text)
+        front-matter (:front-matter result)]
     (count (decode-task-fields front-matter))))
 
 (defn count-facts
   "Count the number of facts in the markdown."
   [markdown-text]
-  (let [parser (md/create-parser)
-        document (.parse ^Parser parser markdown-text)
-        front-matter (md/extract-yaml-front-matter document)]
+  (let [result (md/parse-with-front-matter markdown-text)
+        front-matter (:front-matter result)]
     (count (decode-fact-fields front-matter))))

@@ -2,14 +2,16 @@
   (:gen-class)
   (:require
    [cli-matic.core :as cli]
+   [clj-yaml.core :as yaml]
    [clojure.pprint :as pprint]
    [plan.config :as config]
    [plan.db :as db]
+   [plan.import :as import]
    [plan.markdown :as markdown]
    [plan.models.fact :as fact]
    [plan.models.plan :as plan]
    [plan.models.task :as task]
-   [plan.serializers.markdown :as md-serializer]))
+   [plan.serializers.markdown-v2 :as md-v2]))
 
 (set! *warn-on-reflection* true)
 
@@ -290,26 +292,83 @@
         (pprint/pprint {:deleted {:task id}})))))
 
 (defn test-markdown
-  "Test CommonMark markdown parsing with YAML front matter.
+  "Parse a markdown file and display its contents.
+   Shows raw YAML front matter, parsed front matter, body content, and rendered HTML."
+  [{:keys [file]}]
+  (if (nil? file)
+    ;; No file provided, run the built-in test
+    (do (println "Testing CommonMark markdown parsing...")
+        (let [result (markdown/test-markdown-parsing)]
+          (println "\n=== Test Input ===")
+          (println (:input result))
+          (println "\n=== Front Matter ===")
+          (pprint/pprint (:front-matter result))
+          (println "\n=== Rendered HTML ===")
+          (println (:html result))
+          (println "\n=== Test Result ===")
+          (if (:success result)
+            (do (println "SUCCESS: CommonMark parsing works correctly!")
+                (System/exit 0))
+            (do (println "FAILURE: CommonMark parsing failed!")
+                (System/exit 1)))))
+    ;; File provided, parse and display it
+    (let [^java.io.File f (java.io.File. ^String file)]
+      (if-not (.exists f)
+        (do (println (str "Error: File not found: " file))
+            (System/exit 1))
+        (let [content (slurp file)
+              result (markdown/parse-with-front-matter content)]
+          (println (str "\n=== File: " file " ==="))
+          (println "\n=== Raw YAML Front Matter ===")
+          (if (:raw-yaml result)
+            (println (:raw-yaml result))
+            (println "(none)"))
+          (println "\n=== Parsed Front Matter ===")
+          (pprint/pprint (:front-matter result))
+          (println "\n=== Body Content (raw markdown) ===")
+          (println (:body result))
+          (println "\n=== Rendered HTML ===")
+          (println (:html result))
+          (System/exit 0))))))
+
+(defn test-yaml
+  "Test clj-yaml parsing functionality.
    Useful for verifying GraalVM native-image compatibility."
   [_]
-  (println "Testing CommonMark markdown parsing...")
-  (let [result (markdown/test-markdown-parsing)]
+  (println "Testing clj-yaml parsing...")
+  (let [test-yaml "name: Sample Project
+version: 1.0.0
+description: A test project for YAML parsing
+tags:
+  - clojure
+  - graalvm
+  - yaml
+config:
+  enabled: true
+  max_items: 100
+  nested:
+    key1: value1
+    key2: value2
+"
+        parsed (yaml/parse-string test-yaml)
+        roundtrip (yaml/generate-string parsed)]
     (println "\n=== Test Input ===")
-    (println (:input result))
-    (println "\n=== Front Matter ===")
-    (pprint/pprint (:front-matter result))
-    (println "\n=== Rendered HTML ===")
-    (println (:html result))
+    (println test-yaml)
+    (println "\n=== Parsed Result ===")
+    (pprint/pprint parsed)
+    (println "\n=== Roundtrip YAML ===")
+    (println roundtrip)
     (println "\n=== Test Result ===")
-    (if (:success result)
-      (do (println "SUCCESS: CommonMark parsing works correctly!")
-          (System/exit 0))
-      (do (println "FAILURE: CommonMark parsing failed!")
+    (if (and (= "Sample Project" (:name parsed))
+             (= "1.0.0" (:version parsed))
+             (= 3 (count (:tags parsed)))
+             (true? (get-in parsed [:config :enabled])))
+      (println "SUCCESS: clj-yaml parsing works correctly!")
+      (do (println "FAILURE: clj-yaml parsing failed!")
           (System/exit 1)))))
 
 (defn plan-export
-  "Export a plan to a markdown file."
+  "Export a plan to a markdown file using v2 format."
   [{:keys [id file]}]
   (let [db-path (config/db-path)]
     (db/with-connection
@@ -319,60 +378,53 @@
           (let [tasks (task/get-by-plan conn id)
                 facts (fact/get-by-plan conn id)
                 output-file (or file (str (:name plan-data) ".md"))]
-            (md-serializer/write-plan-to-file output-file plan-data tasks facts)
+            (md-v2/write-plan-to-file output-file plan-data tasks facts)
             (println (str "Exported plan '" (:name plan-data) "' to " output-file)))
           (do (println (str "Error: Plan with ID " id " not found"))
               (System/exit 1)))))))
 
 (defn plan-import
-  "Import a plan from a markdown file."
-  [{:keys [file]}]
+  "Import a plan from a markdown file with upsert semantics.
+   If a plan with the same name exists, it will be updated.
+   Tasks and facts are matched by name and updated, created, or deleted as needed.
+   Uses hierarchical YAML format (v2) with nested tasks and facts lists."
+  [{:keys [file preview]}]
   (let [db-path (config/db-path)]
     (if-not (.exists ^java.io.File (java.io.File. ^String file))
       (do (println (str "Error: File not found: " file))
           (System/exit 1))
-      (let [data (md-serializer/read-plan-from-file file)]
-        (if-not (md-serializer/valid-plan-markdown? (slurp file))
+      (let [content (slurp file)]
+        (if-not (md-v2/valid-plan-markdown? content)
           (do (println "Error: Invalid plan markdown file")
               (System/exit 1))
-          (db/with-connection
-            db-path
-            (fn [conn]
-              (let [plan-data (:plan data)
-                    ;; Create the plan
-                    created-plan (plan/create conn
-                                              (:name plan-data)
-                                              (:description plan-data)
-                                              (:content plan-data))
-                    plan-id (:id created-plan)]
-                ;; Update completed status if needed
-                (when (:completed plan-data)
-                  (plan/update conn plan-id {:completed true}))
-                ;; Create tasks
-                (doseq [task-data (:tasks data)]
-                  (task/create conn
-                               plan-id
-                               (:name task-data)
-                               (:description task-data)
-                               (:content task-data)
-                               (:parent_id task-data))
-                  (when (:completed task-data)
-                    ;; Get the task we just created (by name) and mark completed
-                    (let [tasks (task/get-by-plan conn plan-id)
-                          matching (first (filter #(= (:name task-data) (:name %)) tasks))]
-                      (when matching
-                        (task/update conn (:id matching) {:completed true})))))
-                ;; Create facts
-                (doseq [fact-data (:facts data)]
-                  (fact/create conn
-                               plan-id
-                               (:name fact-data)
-                               (:description fact-data)
-                               (:content fact-data)))
-                (println (str "Imported plan '" (:name created-plan) "' with ID " plan-id))
-                (pprint/pprint {:plan created-plan
-                                :task-count (count (:tasks data))
-                                :fact-count (count (:facts data))})))))))))
+          (let [data (md-v2/read-plan-from-file file)]
+            (db/with-connection
+              db-path
+              (fn [conn]
+                (if preview
+                  ;; Preview mode - show what would happen
+                  (let [preview-data (import/preview-import conn data)]
+                    (println (str "Preview for plan '" (:plan-name preview-data) "':"))
+                    (println (str "  Plan exists: " (:plan-exists? preview-data)))
+                    (println "  Tasks:")
+                    (println (str "    Create: " (get-in preview-data [:tasks :create])))
+                    (println (str "    Update: " (get-in preview-data [:tasks :update])))
+                    (println (str "    Delete: " (get-in preview-data [:tasks :delete])))
+                    (println "  Facts:")
+                    (println (str "    Create: " (get-in preview-data [:facts :create])))
+                    (println (str "    Update: " (get-in preview-data [:facts :update])))
+                    (println (str "    Delete: " (get-in preview-data [:facts :delete])))
+                    nil)
+                  ;; Import mode - perform the import
+                  (let [plan-existed? (some? (plan/get-by-name conn (get-in data [:plan :name])))
+                        result (import/import-plan conn data)]
+                    (println (str "Imported plan '" (:name result) "' with ID " (:id result)))
+                    (when plan-existed?
+                      (println "  (Updated existing plan)"))
+                    (pprint/pprint {:tasks-imported (:tasks-imported result)
+                                    :tasks-deleted (:tasks-deleted result)
+                                    :facts-imported (:facts-imported result)
+                                    :facts-deleted (:facts-deleted result)})))))))))))
 
 ;; CLI definition
 
@@ -418,9 +470,10 @@
               {:as "Output file" :option "file" :short "f" :type :string}]
        :runs plan-export}
       {:command "import"
-       :description "Import a plan from a markdown file"
-       :opts [{:as "Input file" :option "file" :short "f" :type :string :required true}]
-       :runs plan-import}]}
+       :description "Import a plan from a markdown file with upsert semantics"
+       :opts [{:as "Input file" :option "file" :short "f" :type :string :required true}
+              {:as "Preview changes without importing" :option "preview" :short "p" :type :with-flag :default false}]
+       :runs plan-import}]},
     {:command "task"
      :description "Task operations"
      :subcommands
@@ -455,8 +508,12 @@
      :opts [{:as "Search query" :option "query" :short "q" :type :string :required true}]
      :runs search}
     {:command "test-markdown"
-     :description "Test CommonMark markdown parsing (verifies GraalVM compatibility)"
-     :runs test-markdown}]})
+     :description "Parse a markdown file and display its contents"
+     :opts [{:as "Markdown file to parse" :option "file" :short "f" :type :string}]
+     :runs test-markdown}
+    {:command "test-yaml"
+     :description "Test clj-yaml parsing (verifies GraalVM compatibility)"
+     :runs test-yaml}]})
 
 (defn -main [& args]
   (cli/run-cmd args cli-definition))

@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [update])
   (:require
    [malli.core :as m]
+   [next.jdbc :as jdbc]
    [plan.db :as db]))
 
 (set! *warn-on-reflection* true)
@@ -109,14 +110,50 @@
   [conn query]
   (db/search-facts conn query))
 
+(defn get-by-plan-and-name
+  "Fetch a fact by plan_id and name. Returns nil if not found."
+  [conn plan-id name]
+  (db/execute-one!
+   conn
+   {:select [:*]
+    :from [:facts]
+    :where [:and [:= :plan_id plan-id] [:= :name name]]}))
+
+(defn upsert
+  "Insert or update a fact by plan_id and name. Returns the fact.
+   If a fact with this plan_id and name exists, updates it. Otherwise creates new."
+  [conn plan-id {:keys [name description content]}]
+  (jdbc/execute! conn
+                 [(str "INSERT INTO facts (plan_id, name, description, content) VALUES (?, ?, ?, ?) "
+                       "ON CONFLICT(plan_id, name) DO UPDATE SET description = excluded.description, "
+                       "content = excluded.content")
+                  plan-id name description content])
+  (db/execute-one! conn {:select [:*] :from [:facts]
+                         :where [:and [:= :plan_id plan-id] [:= :name name]]}))
+
+(defn delete-orphans
+  "Delete facts for a plan that are not in the given set of names.
+   Returns the number of facts deleted."
+  [conn plan-id keep-names]
+  (if (seq keep-names)
+    (let [result (db/execute!
+                  conn
+                  {:delete-from :facts
+                   :where [:and [:= :plan_id plan-id] [:not-in :name keep-names]]})]
+      (get (first result) :next.jdbc/update-count 0))
+    (delete-by-plan conn plan-id)))
+
 ;; Malli function schemas - register at end to avoid reload issues
 (try
   (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string]] Fact])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Fact]])
   (m/=> get-by-plan [:=> [:cat :any :int] [:sequential Fact]])
+  (m/=> get-by-plan-and-name [:=> [:cat :any :int :string] [:maybe Fact]])
   (m/=> get-all [:=> [:cat :any] [:sequential Fact]])
   (m/=> update [:=> [:cat :any :int FactUpdate] [:maybe Fact]])
+  (m/=> upsert [:=> [:cat :any :int Fact] Fact])
   (m/=> delete [:=> [:cat :any :int] :boolean])
   (m/=> delete-by-plan [:=> [:cat :any :int] :int])
+  (m/=> delete-orphans [:=> [:cat :any :int [:sequential :string]] :int])
   (m/=> search [:=> [:cat :any :string] [:sequential Fact]])
   (catch Exception _ nil))

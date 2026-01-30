@@ -27,22 +27,27 @@ All commands output pretty-printed JSON/EDN data structures.
 plan init
 
 # Plan operations
-plan plan list                           # List all plans
-plan plan create -d "Description" -c "Content"  # Create a new plan
-plan plan show --id 1                    # Show a specific plan with tasks and facts
-plan plan update --id 1 -d "New desc" -c "New content" --completed true  # Update a plan
-plan plan delete --id 1                  # Delete a plan (cascades to tasks)
-plan plan export --id 1 -f "file.md"     # Export plan to markdown file
-plan plan import -f "file.md"            # Import plan from markdown file
+plan plan list                                          # List all plans
+plan plan create -n "My Plan"                           # Create plan (name required)
+plan plan create -n "My Plan" -d "Description" -c "Content"  # Create with all fields
+plan plan show --id 1                                   # Show plan with tasks and facts
+plan plan update --id 1 -d "New desc" --completed true  # Update a plan
+plan plan delete --id 1                                 # Delete plan (cascades to tasks and facts)
+plan plan export --id 1                                 # Export to markdown (uses plan name as filename)
+plan plan export --id 1 -f "custom.md"                  # Export to specific file
+plan plan import -f "file.md"                           # Import plan from markdown (upsert)
+plan plan import -f "file.md" -p                        # Preview import without changes
 
 # Task operations
-plan task list --plan-id 1               # List tasks for a plan
-plan task create --plan-id 1 -d "Task" -c "Content" --parent-id N  # Create a new task
-plan task update --id 1 -d "New desc" -c "Content" --completed true --plan-id 2 --parent-id 3  # Update a task
-plan task delete --id 1                  # Delete a task
+plan task list --plan-id 1                              # List tasks for a plan
+plan task create --plan-id 1 -n "My Task"               # Create task (name required)
+plan task create --plan-id 1 -n "My Task" -d "Desc" -c "Content"  # Create with all fields
+plan task create --plan-id 1 -n "Subtask" --parent-id 1 # Create subtask
+plan task update --id 1 -d "New desc" --completed true  # Update a task
+plan task delete --id 1                                 # Delete a task
 
 # Search (uses FTS5 for full-text search with prefix matching)
-plan search -q "query"                   # Search across plans, tasks, and facts
+plan search -q "query"                                  # Search across plans, tasks, and facts
 ```
 
 ### Example Usage
@@ -52,8 +57,8 @@ plan search -q "query"                   # Search across plans, tasks, and facts
 plan init
 
 # Create some plans
-plan plan create -d "Build a CLI tool" -c "Using Clojure and GraalVM"
-plan plan create -d "Write documentation"
+plan plan create -n "Build CLI Tool" -d "Build a CLI tool" -c "Using Clojure and GraalVM"
+plan plan create -n "Documentation" -d "Write documentation"
 
 # List all plans
 plan plan list
@@ -62,8 +67,8 @@ plan plan list
 plan plan show --id 1
 
 # Add tasks to a plan
-plan task create --plan-id 1 -d "Set up project structure"
-plan task create --plan-id 1 -d "Implement core features" -c "Include tests"
+plan task create --plan-id 1 -n "Setup project" -d "Set up project structure"
+plan task create --plan-id 1 -n "Core features" -d "Implement core features" -c "Include tests"
 
 # List tasks for a plan
 plan task list --plan-id 1
@@ -80,17 +85,20 @@ plan task update --id 2 --plan-id 3
 # Delete a task
 plan task delete --id 5
 
-# Delete a plan (cascades to all tasks)
+# Delete a plan (cascades to all tasks and facts)
 plan plan delete --id 2
 
 # Search across all content
 plan search -q "CLI"
-plan search -q "implement features"
+plan search -q "core features"
 
 # Export a plan to markdown
 plan plan export --id 1 -f "my-plan.md"
 
-# Import a plan from markdown
+# Import a plan from markdown (preview first)
+plan plan import -f "my-plan.md" -p
+
+# Import for real
 plan plan import -f "my-plan.md"
 
 # Full round-trip workflow
@@ -103,6 +111,11 @@ plan plan import -f "backup.md"
 
 The planning tool is focused on plans. Plans are made up of
 completable tasks. Tasks can have a parent task (max depth: 2).
+
+Names serve as unique identifiers for import/export:
+- Plan names are globally unique
+- Task names are unique within a plan
+- Fact names are unique within a plan
 
 ### Indexes
 
@@ -123,9 +136,10 @@ Triggers keep the FTS indexes synchronized with the main tables.
 ### Plan
 
 - id: integer (primary key, autoincrement)
-- completed: boolean (not null, default: false)
+- name: string (unique, required)
 - description: string (short summary)
 - content: string (full text, searchable)
+- completed: boolean (not null, default: false)
 - created_at: timestamp (default: current_timestamp)
 - updated_at: timestamp
 - tasks: many reference to Task
@@ -135,9 +149,10 @@ Triggers keep the FTS indexes synchronized with the main tables.
 
 - id: integer (primary key, autoincrement)
 - plan_id: integer (not null, foreign key to Plan)
-- completed: boolean (not null, default: false)
+- name: string (unique within plan, required)
 - description: string (short summary)
 - content: string (full text, searchable)
+- completed: boolean (not null, default: false)
 - parent_id: integer (optional, for subtasks, max depth 2)
 - created_at: timestamp (default: current_timestamp)
 - updated_at: timestamp
@@ -150,6 +165,7 @@ making the same mistake twice.
 
 - id: integer (primary key, autoincrement)
 - plan_id: integer (not null, foreign key to Plan)
+- name: string (unique within plan, required)
 - description: string (short summary)
 - content: string (full text, searchable)
 - created_at: timestamp (default: current_timestamp)
@@ -164,39 +180,39 @@ This format is compatible with CommonMark parsers and works with GraalVM native-
 
 ```markdown
 ---
-plan_name: Implement User Authentication
-plan_description: Add login/logout functionality
-plan_completed: false
-task_0_name: Create users table
-task_0_description: Set up database schema
-task_0_completed: true
-task_1_name: Implement login endpoint
-task_1_completed: false
-fact_0_name: Security Requirements
-fact_0_description: OAuth2 and JWT requirements
-fact_0_content: |
-  - Use OAuth2 for third-party auth
-  - JWT tokens with 24h expiry
-  - Refresh token rotation
+description: Add login/logout functionality
+completed: false
+tasks:
+- name: Create users table
+  description: Set up database schema
+  content: |
+    Create the users table with email, password_hash, created_at columns.
+  completed: true
+- name: Implement login endpoint
+  description: POST /api/login
+  completed: false
+facts:
+- name: Security Requirements
+  description: OAuth2 and JWT requirements
+  content: |
+    - Use OAuth2 for third-party auth
+    - JWT tokens with 24h expiry
+    - Refresh token rotation
 ---
 
-# User Authentication Implementation
+# Implement User Authentication
 
 This plan covers the implementation of user authentication
 using OAuth2 and JWT tokens.
-
-## Tasks
-
-- [x] Create users table
-- [ ] Implement login endpoint
 ```
 
 ### Format Notes
 
-- Uses flat key-value pairs in YAML front matter (CommonMark compatible)
-- Plan fields use `plan_` prefix
-- Task fields use `task_N_` prefix (e.g., `task_0_name`, `task_1_name`)
-- Fact fields use `fact_N_` prefix (e.g., `fact_0_name`)
+- Uses hierarchical YAML with nested lists for tasks and facts
+- Plan name comes from the first H1 heading in the body (`# Plan Name`)
+- Plan description and completed status are in the front matter
+- Tasks and facts are nested lists with `name`, `description`, `content`, and `completed` fields
 - Multiline content uses YAML literal block syntax (`|`)
-- Boolean values are normalized ("true"/"false" strings become actual booleans)
-- The body content after the front matter is the plan's content field
+- The markdown body after the front matter becomes the plan's content field
+- Import uses upsert semantics: existing plans are updated, tasks/facts matched by name
+- Use `-p` flag to preview import changes before applying

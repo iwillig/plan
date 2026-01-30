@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [update])
   (:require
    [malli.core :as m]
+   [next.jdbc :as jdbc]
    [plan.db :as db]))
 
 (set! *warn-on-reflection* true)
@@ -141,16 +142,55 @@
   [conn query]
   (db/search-tasks conn query))
 
+(defn get-by-plan-and-name
+  "Fetch a task by plan_id and name. Returns nil if not found."
+  [conn plan-id name]
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:select [:*]
+     :from [:tasks]
+     :where [:and [:= :plan_id plan-id] [:= :name name]]})))
+
+(defn upsert
+  "Insert or update a task by plan_id and name. Returns the task.
+   If a task with this plan_id and name exists, updates it. Otherwise creates new."
+  [conn plan-id {:keys [name description content completed parent_id]}]
+  (jdbc/execute! conn
+                 [(str "INSERT INTO tasks (plan_id, name, description, content, completed, parent_id) "
+                       "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(plan_id, name) DO UPDATE SET "
+                       "description = excluded.description, content = excluded.content, "
+                       "completed = excluded.completed, parent_id = excluded.parent_id")
+                  plan-id name description content (if completed 1 0) parent_id])
+  (convert-boolean
+   (db/execute-one! conn {:select [:*] :from [:tasks]
+                          :where [:and [:= :plan_id plan-id] [:= :name name]]})))
+
+(defn delete-orphans
+  "Delete tasks for a plan that are not in the given set of names.
+   Returns the number of tasks deleted."
+  [conn plan-id keep-names]
+  (if (seq keep-names)
+    (let [result (db/execute!
+                  conn
+                  {:delete-from :tasks
+                   :where [:and [:= :plan_id plan-id] [:not-in :name keep-names]]})]
+      (get (first result) :next.jdbc/update-count 0))
+    (delete-by-plan conn plan-id)))
+
 ;; Malli function schemas - register at end to avoid reload issues
 (try
   (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string] [:maybe :int]] Task])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Task]])
   (m/=> get-by-plan [:=> [:cat :any :int] [:sequential Task]])
+  (m/=> get-by-plan-and-name [:=> [:cat :any :int :string] [:maybe Task]])
   (m/=> get-children [:=> [:cat :any :int] [:sequential Task]])
   (m/=> get-all [:=> [:cat :any] [:sequential Task]])
   (m/=> update [:=> [:cat :any :int TaskUpdate] [:maybe Task]])
+  (m/=> upsert [:=> [:cat :any :int Task] Task])
   (m/=> delete [:=> [:cat :any :int] :boolean])
   (m/=> delete-by-plan [:=> [:cat :any :int] :int])
+  (m/=> delete-orphans [:=> [:cat :any :int [:sequential :string]] :int])
   (m/=> mark-completed [:=> [:cat :any :int :boolean] [:maybe Task]])
   (m/=> search [:=> [:cat :any :string] [:sequential Task]])
   (catch Exception _ nil))

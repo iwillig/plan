@@ -1,15 +1,23 @@
 (ns plan.markdown
   "Markdown parsing functionality using CommonMark Java library.
-   Designed to be GraalVM native-image compatible."
+   Designed to be GraalVM native-image compatible.
+
+   Uses clj-yaml for YAML parsing to provide:
+   - Full YAML spec compliance
+   - Raw YAML string access
+   - Better type handling (dates, booleans, numbers)"
   (:require
+   [clj-yaml.core :as yaml]
    [clojure.string :as str])
   (:import
    (org.commonmark.ext.front.matter
-    YamlFrontMatterExtension
-    YamlFrontMatterVisitor)
+    YamlFrontMatterBlock
+    YamlFrontMatterExtension)
    (org.commonmark.node
-    Document)
+    Document
+    SourceSpan)
    (org.commonmark.parser
+    IncludeSourceSpans
     Parser)
    (org.commonmark.renderer.html
     HtmlRenderer)))
@@ -17,11 +25,13 @@
 (set! *warn-on-reflection* true)
 
 (defn create-parser
-  "Create a CommonMark parser with YAML front matter extension."
+  "Create a CommonMark parser with YAML front matter extension.
+   Includes source spans to enable raw YAML extraction."
   []
   (let [extensions [(YamlFrontMatterExtension/create)]
         parser-builder (Parser/builder)]
     (.extensions parser-builder extensions)
+    (.includeSourceSpans parser-builder IncludeSourceSpans/BLOCKS)
     (.build parser-builder)))
 
 (defn create-renderer
@@ -44,45 +54,97 @@
   (let [^HtmlRenderer renderer (create-renderer)]
     (.render renderer document)))
 
-(defn extract-yaml-front-matter
-  "Extract YAML front matter from markdown document.
-   Returns a map of key-value pairs, or nil if no front matter found."
-  [^Document document]
-  (let [^YamlFrontMatterVisitor visitor (YamlFrontMatterVisitor.)]
-    (.visit visitor document)
-    (let [data (.getData visitor)]
-      (when (seq data)
-        (into {} (map (fn [[k v]]
-                        [(keyword k) (if (= 1 (count v))
-                                       (first v)
-                                       (vec v))])
-                      data))))))
+(defn extract-raw-yaml
+  "Extract raw YAML front matter string from parsed document.
+   Returns the raw YAML including --- delimiters, or nil if no front matter."
+  [^Document document ^String original-input]
+  (let [yaml-block (.getFirstChild document)]
+    (when (instance? YamlFrontMatterBlock yaml-block)
+      (let [source-spans (.getSourceSpans yaml-block)]
+        (when (seq source-spans)
+          (let [^SourceSpan first-span (first source-spans)
+                ^SourceSpan last-span (last source-spans)
+                start-index (.getInputIndex first-span)
+                end-index (+ (.getInputIndex last-span) (.getLength last-span))]
+            (subs original-input start-index end-index)))))))
+
+(defn parse-yaml-content
+  "Parse YAML content string (without delimiters) using clj-yaml.
+   Returns parsed YAML as Clojure data structures."
+  [^String yaml-content]
+  (when (seq (str/trim yaml-content))
+    (yaml/parse-string yaml-content)))
+
+(defn extract-body-content
+  "Extract body content from markdown string, given the end index of front matter."
+  [^String input front-matter-end-index]
+  (if front-matter-end-index
+    (str/trim (subs input front-matter-end-index))
+    (str/trim input)))
+
+(defn parse-with-front-matter
+  "Parse markdown and return both HTML and front matter.
+   Uses clj-yaml for YAML parsing to provide full YAML spec compliance.
+
+   Returns a map with:
+   - :html - Rendered HTML body (front matter excluded)
+   - :front-matter - Parsed YAML as Clojure data structures
+   - :raw-yaml - Raw YAML string including --- delimiters
+   - :body - Raw body content (markdown without front matter)
+   - :document - The parsed AST document"
+  [^String input]
+  (let [extensions [(YamlFrontMatterExtension/create)]
+        parser-builder (Parser/builder)]
+    (.extensions parser-builder extensions)
+    (.includeSourceSpans parser-builder IncludeSourceSpans/BLOCKS)
+    (let [parser (.build parser-builder)
+          document (.parse parser input)
+          yaml-block (.getFirstChild document)]
+      (if (instance? YamlFrontMatterBlock yaml-block)
+        ;; Has front matter
+        (let [source-spans (.getSourceSpans yaml-block)]
+          (if (seq source-spans)
+            (let [^SourceSpan first-span (first source-spans)
+                  ^SourceSpan last-span (last source-spans)
+                  start-index (.getInputIndex first-span)
+                  end-index (+ (.getInputIndex last-span) (.getLength last-span))
+                  raw-yaml (subs input start-index end-index)
+                  ;; Parse YAML with clj-yaml (remove delimiters first)
+                  yaml-content (-> raw-yaml
+                                   (str/replace-first #"^---\n" "")
+                                   (str/replace #"\n---$" ""))
+                  parsed-yaml (parse-yaml-content yaml-content)
+                  body-content (extract-body-content input end-index)
+                  renderer-builder (HtmlRenderer/builder)
+                  _ (.extensions renderer-builder extensions)
+                  renderer (.build renderer-builder)
+                  html (.render renderer document)]
+              {:html html
+               :front-matter parsed-yaml
+               :raw-yaml raw-yaml
+               :body body-content
+               :document document})
+            ;; No source spans available
+            {:html (render-html document)
+             :front-matter nil
+             :raw-yaml nil
+             :body input
+             :document document}))
+        ;; No front matter
+        (let [renderer-builder (HtmlRenderer/builder)
+              _ (.extensions renderer-builder extensions)
+              renderer (.build renderer-builder)
+              html (.render renderer document)]
+          {:html html
+           :front-matter nil
+           :raw-yaml nil
+           :body (str/trim input)
+           :document document})))))
 
 (defn markdown->html
   "Convert markdown string directly to HTML."
   [^String input]
   (-> input parse-markdown render-html))
-
-(defn parse-with-front-matter
-  "Parse markdown and return both HTML and front matter."
-  [^String input]
-  (let [document (parse-markdown input)
-        html (render-html document)
-        front-matter (extract-yaml-front-matter document)]
-    {:html html
-     :front-matter front-matter
-     :document document}))
-
-(defn extract-body-content
-  "Extract the body content (after front matter) from a markdown document.
-   Returns the content as plain text, stripping the front matter."
-  [^String markdown-text]
-  (let [lines (str/split-lines markdown-text)
-        ;; Find the second --- delimiter (end of front matter)
-        front-matter-end (second (keep-indexed #(when (= "---" %2) %1) lines))]
-    (if front-matter-end
-      (str/trim (str/join "\n" (drop (inc front-matter-end) lines)))
-      (str/trim markdown-text))))
 
 (defn test-markdown-parsing
   "Test function to verify CommonMark works correctly.
@@ -91,6 +153,9 @@
   (let [test-input "---
 title: Test Document
 author: Test Author
+date: 2024-01-15
+draft: false
+priority: 1
 tags:
   - clojure
   - graalvm
@@ -115,7 +180,16 @@ This is a **test** of the CommonMark library.
                    (seq (:html result))
                    (map? (:front-matter result))
                    (= "Test Document" (get-in result [:front-matter :title]))
-                   (= "Test Author" (get-in result [:front-matter :author])))
+                   (= "Test Author" (get-in result [:front-matter :author]))
+                   (= #inst "2024-01-15T00:00:00.000-00:00" (get-in result [:front-matter :date]))
+                   (= false (get-in result [:front-matter :draft]))
+                   (= 1 (get-in result [:front-matter :priority]))
+                   (string? (:raw-yaml result))
+                   (str/starts-with? (:raw-yaml result) "---")
+                   (string? (:body result))
+                   (not (str/blank? (:body result))))
      :html (:html result)
      :front-matter (:front-matter result)
+     :raw-yaml (:raw-yaml result)
+     :body (:body result)
      :input test-input}))

@@ -25,7 +25,10 @@
 
   ;; Markdown parsing (GraalVM compatible)
   org.commonmark/commonmark {:mvn/version "0.24.0"}
-  org.commonmark/commonmark-ext-yaml-front-matter {:mvn/version "0.24.0"}}
+  org.commonmark/commonmark-ext-yaml-front-matter {:mvn/version "0.24.0"}
+
+  ;; YAML parsing (GraalVM compatible - includes native-image config)
+  clj-commons/clj-yaml {:mvn/version "1.0.29"}}
 
  :paths ["src"
          "classes"

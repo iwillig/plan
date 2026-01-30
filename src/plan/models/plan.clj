@@ -3,6 +3,7 @@
   (:refer-clojure :exclude [update])
   (:require
    [malli.core :as m]
+   [next.jdbc :as jdbc]
    [plan.db :as db]))
 
 (set! *warn-on-reflection* true)
@@ -103,12 +104,36 @@
   [conn query]
   (db/search-plans conn query))
 
+(defn get-by-name
+  "Fetch a plan by its name. Returns nil if not found."
+  [conn name]
+  (convert-boolean
+   (db/execute-one!
+    conn
+    {:select [:*]
+     :from [:plans]
+     :where [:= :name name]})))
+
+(defn upsert
+  "Insert or update a plan by name. Returns the plan.
+   If a plan with this name exists, updates it. Otherwise creates new."
+  [conn {:keys [name description content completed]}]
+  (jdbc/execute! conn
+                 [(str "INSERT INTO plans (name, description, content, completed) VALUES (?, ?, ?, ?) "
+                       "ON CONFLICT(name) DO UPDATE SET description = excluded.description, "
+                       "content = excluded.content, completed = excluded.completed")
+                  name description content (if completed 1 0)])
+  (convert-boolean
+   (db/execute-one! conn {:select [:*] :from [:plans] :where [:= :name name]})))
+
 ;; Malli function schemas - register at end to avoid reload issues
 (try
   (m/=> create [:=> [:cat :any :string [:maybe :string] [:maybe :string]] Plan])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Plan]])
+  (m/=> get-by-name [:=> [:cat :any :string] [:maybe Plan]])
   (m/=> get-all [:=> [:cat :any] [:sequential Plan]])
   (m/=> update [:=> [:cat :any :int PlanUpdate] [:maybe Plan]])
+  (m/=> upsert [:=> [:cat :any Plan] Plan])
   (m/=> delete [:=> [:cat :any :int] :boolean])
   (m/=> mark-completed [:=> [:cat :any :int :boolean] [:maybe Plan]])
   (m/=> search [:=> [:cat :any :string] [:sequential Plan]])
