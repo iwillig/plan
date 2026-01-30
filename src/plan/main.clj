@@ -175,9 +175,10 @@
   "Initialize the database with schema"
   [_]
   (let [db-path (config/db-path)]
-    (println (str "Initializing database at: " db-path))
     (db/with-connection db-path create-schema!)
-    (println "Database initialized successfully.")))
+    (pprint/pprint {:status :success
+                    :db-path db-path
+                    :message "Database initialized"})))
 
 (defn plan-list
   "List all plans"
@@ -296,40 +297,30 @@
   [{:keys [file]}]
   (if (nil? file)
     ;; No file provided, run the built-in test
-    (do (println "Testing CommonMark markdown parsing...")
-        (let [result (markdown/test-markdown-parsing)]
-          (println "\n=== Test Input ===")
-          (println (:input result))
-          (println "\n=== Front Matter ===")
-          (pprint/pprint (:front-matter result))
-          (println "\n=== Rendered HTML ===")
-          (println (:html result))
-          (println "\n=== Test Result ===")
-          (if (:success result)
-            (do (println "SUCCESS: CommonMark parsing works correctly!")
-                (System/exit 0))
-            (do (println "FAILURE: CommonMark parsing failed!")
-                (System/exit 1)))))
+    (let [result (markdown/test-markdown-parsing)]
+      (pprint/pprint {:mode :test
+                      :input (:input result)
+                      :front-matter (:front-matter result)
+                      :html (:html result)
+                      :success (:success result)})
+      (if (:success result)
+        (System/exit 0)
+        (System/exit 1)))
     ;; File provided, parse and display it
     (let [^java.io.File f (java.io.File. ^String file)]
       (if-not (.exists f)
-        (do (println (str "Error: File not found: " file))
+        (do (pprint/pprint {:status :error
+                            :message (str "File not found: " file)})
             (System/exit 1))
         (let [content (slurp file)
               result (markdown/parse-with-front-matter content)]
-          (println (str "\n=== File: " file " ==="))
-          (println "\n=== Raw YAML Front Matter ===")
-          (if (:raw-yaml result)
-            (println (:raw-yaml result))
-            (println "(none)"))
-          (println "\n=== Parsed Front Matter ===")
-          (pprint/pprint (:front-matter result))
-          (println "\n=== Body Content (raw markdown) ===")
-          (println (:body result))
-          (println "\n=== Rendered HTML ===")
-          (println (:html result))
+          (pprint/pprint {:mode :parse
+                          :file file
+                          :raw-yaml (:raw-yaml result)
+                          :front-matter (:front-matter result)
+                          :body (:body result)
+                          :html (:html result)})
           (System/exit 0))))))
-
 
 (defn plan-export
   "Export a plan to a markdown file using v2 format."
@@ -343,8 +334,11 @@
                 facts (fact/get-by-plan conn id)
                 output-file (or file (str (:name plan-data) ".md"))]
             (md-v2/write-plan-to-file output-file plan-data tasks facts)
-            (println (str "Exported plan '" (:name plan-data) "' to " output-file)))
-          (do (println (str "Error: Plan with ID " id " not found"))
+            (pprint/pprint {:status :success
+                            :plan-name (:name plan-data)
+                            :file output-file}))
+          (do (pprint/pprint {:status :error
+                              :message (str "Plan with ID " id " not found")})
               (System/exit 1)))))))
 
 (defn plan-import
@@ -355,11 +349,13 @@
   [{:keys [file preview]}]
   (let [db-path (config/db-path)]
     (if-not (.exists ^java.io.File (java.io.File. ^String file))
-      (do (println (str "Error: File not found: " file))
+      (do (pprint/pprint {:status :error
+                          :message (str "File not found: " file)})
           (System/exit 1))
       (let [content (slurp file)]
         (if-not (md-v2/valid-plan-markdown? content)
-          (do (println "Error: Invalid plan markdown file")
+          (do (pprint/pprint {:status :error
+                              :message "Invalid plan markdown file"})
               (System/exit 1))
           (let [data (md-v2/read-plan-from-file file)]
             (db/with-connection
@@ -368,24 +364,23 @@
                 (if preview
                   ;; Preview mode - show what would happen
                   (let [preview-data (import/preview-import conn data)]
-                    (println (str "Preview for plan '" (:plan-name preview-data) "':"))
-                    (println (str "  Plan exists: " (:plan-exists? preview-data)))
-                    (println "  Tasks:")
-                    (println (str "    Create: " (get-in preview-data [:tasks :create])))
-                    (println (str "    Update: " (get-in preview-data [:tasks :update])))
-                    (println (str "    Delete: " (get-in preview-data [:tasks :delete])))
-                    (println "  Facts:")
-                    (println (str "    Create: " (get-in preview-data [:facts :create])))
-                    (println (str "    Update: " (get-in preview-data [:facts :update])))
-                    (println (str "    Delete: " (get-in preview-data [:facts :delete])))
-                    nil)
+                    (pprint/pprint {:status :preview
+                                    :plan-name (:plan-name preview-data)
+                                    :plan-exists? (:plan-exists? preview-data)
+                                    :tasks {:create (get-in preview-data [:tasks :create])
+                                            :update (get-in preview-data [:tasks :update])
+                                            :delete (get-in preview-data [:tasks :delete])}
+                                    :facts {:create (get-in preview-data [:facts :create])
+                                            :update (get-in preview-data [:facts :update])
+                                            :delete (get-in preview-data [:facts :delete])}}))
                   ;; Import mode - perform the import
                   (let [plan-existed? (some? (plan/get-by-name conn (get-in data [:plan :name])))
                         result (import/import-plan conn data)]
-                    (println (str "Imported plan '" (:name result) "' with ID " (:id result)))
-                    (when plan-existed?
-                      (println "  (Updated existing plan)"))
-                    (pprint/pprint {:tasks-imported (:tasks-imported result)
+                    (pprint/pprint {:status :success
+                                    :plan-name (:name result)
+                                    :plan-id (:id result)
+                                    :updated-existing? plan-existed?
+                                    :tasks-imported (:tasks-imported result)
                                     :tasks-deleted (:tasks-deleted result)
                                     :facts-imported (:facts-imported result)
                                     :facts-deleted (:facts-deleted result)})))))))))))
@@ -393,8 +388,8 @@
 (defn config-show
   "Display the current configuration"
   [_]
-  (println (str "Config file: " config/config-file))
-  (pprint/pprint (config/load-config)))
+  (pprint/pprint {:config-file config/config-file
+                  :config (config/load-config)}))
 
 (defn new-plan-file
   "Create a new plan file for LLM collaboration.
@@ -404,7 +399,8 @@
         filename (or file (str plan-name ".md"))
         ^java.io.File f (java.io.File. ^String filename)]
     (when (.exists f)
-      (println (str "Error: File already exists: " filename))
+      (pprint/pprint {:status :error
+                      :message (str "File already exists: " filename)})
       (System/exit 1))
     (let [template-content (str "# " plan-name "\n\n"
                                 "## Overview\n\n"
@@ -430,12 +426,12 @@
                      :completed false}
           markdown-content (md-v2/plan->markdown plan-data [] [])]
       (spit filename markdown-content)
-      (println (str "Created new plan file: " filename))
-      (println (str "Plan name: " plan-name))
-      (println "\nNext steps:")
-      (println (str "  1. Edit " filename " to fill in your goals and context"))
-      (println "  2. Import the plan: plan plan import -f " filename)
-      (println "  3. Start iterating with your LLM assistant"))))
+      (pprint/pprint {:status :success
+                      :file filename
+                      :plan-name plan-name
+                      :next-steps [(str "Edit " filename " to fill in your goals and context")
+                                   (str "Import the plan: plan plan import -f " filename)
+                                   "Start iterating with your LLM assistant"]}))))
 
 ;; CLI definition
 
