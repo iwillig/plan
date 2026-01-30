@@ -390,6 +390,53 @@
                                     :facts-imported (:facts-imported result)
                                     :facts-deleted (:facts-deleted result)})))))))))))
 
+(defn config-show
+  "Display the current configuration"
+  [_]
+  (println (str "Config file: " config/config-file))
+  (pprint/pprint (config/load-config)))
+
+(defn new-plan-file
+  "Create a new plan file for LLM collaboration.
+   Generates a markdown file with a template structure."
+  [{:keys [name file description]}]
+  (let [plan-name (or name "new-plan")
+        filename (or file (str plan-name ".md"))
+        ^java.io.File f (java.io.File. ^String filename)]
+    (when (.exists f)
+      (println (str "Error: File already exists: " filename))
+      (System/exit 1))
+    (let [template-content (str "# " plan-name "\n\n"
+                                "## Overview\n\n"
+                                "Describe what you want to accomplish with this plan.\n\n"
+                                "## Goals\n\n"
+                                "- Goal 1\n"
+                                "- Goal 2\n"
+                                "- Goal 3\n\n"
+                                "## Context\n\n"
+                                "Add any relevant context, background information, or constraints here.\n\n"
+                                "## Approach\n\n"
+                                "Outline your proposed approach or any specific requirements.\n\n"
+                                "---\n\n"
+                                "## Discussion\n\n"
+                                "Use this section for back-and-forth with the LLM.\n\n"
+                                "### Initial Request\n\n"
+                                "Your initial request or question to the LLM goes here.\n\n"
+                                "### Response\n\n"
+                                "LLM responses will be added here during iteration.")
+          plan-data {:name plan-name
+                     :description (or description "A plan for LLM collaboration")
+                     :content template-content
+                     :completed false}
+          markdown-content (md-v2/plan->markdown plan-data [] [])]
+      (spit filename markdown-content)
+      (println (str "Created new plan file: " filename))
+      (println (str "Plan name: " plan-name))
+      (println "\nNext steps:")
+      (println (str "  1. Edit " filename " to fill in your goals and context"))
+      (println "  2. Import the plan: plan plan import -f " filename)
+      (println "  3. Start iterating with your LLM assistant"))))
+
 ;; CLI definition
 
 (def cli-definition
@@ -474,7 +521,16 @@
     {:command "markdown"
      :description "Parse a markdown file and display its contents"
      :opts [{:as "Markdown file to parse" :option "file" :short "f" :type :string}]
-     :runs markdown-cmd}]})
+     :runs markdown-cmd}
+    {:command "config"
+     :description "Show current configuration"
+     :runs config-show}
+    {:command "new"
+     :description "Create a new plan file for LLM collaboration"
+     :opts [{:as "Plan name" :option "name" :short "n" :type :string}
+            {:as "Output file" :option "file" :short "f" :type :string}
+            {:as "Description" :option "description" :short "d" :type :string}]
+     :runs new-plan-file}]})
 
 (defn -main [& args]
   (cli/run-cmd args cli-definition))

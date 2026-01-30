@@ -255,5 +255,42 @@
       (is (contains? commands "init"))
       (is (contains? commands "plan"))
       (is (contains? commands "task"))
-      (is (contains? commands "search")))))
+      (is (contains? commands "search"))
+      (is (contains? commands "new")))))
+
+(deftest new-plan-file-test
+  (testing "new-plan-file creates a markdown file with template"
+    (let [temp-file (str "/tmp/test-new-plan-" (System/currentTimeMillis) ".md")]
+      (try
+        ;; Create the file
+        (main/new-plan-file {:name "my-test-plan" :file temp-file :description "Test plan description"})
+        ;; Verify file was created
+        (is (.exists (java.io.File. temp-file)))
+        ;; Verify content
+        (let [content (slurp temp-file)]
+          (is (str/includes? content "# my-test-plan"))
+          (is (str/includes? content "Test plan description"))
+          (is (str/includes? content "## Overview"))
+          (is (str/includes? content "## Goals"))
+          (is (str/includes? content "## Context"))
+          (is (str/includes? content "## Approach"))
+          (is (str/includes? content "## Discussion"))
+          (is (str/includes? content "### Initial Request"))
+          (is (str/includes? content "### Response")))
+        (finally
+          ;; Cleanup
+          (.delete (java.io.File. temp-file))))))
+  (testing "new-plan-file uses defaults when options not provided"
+    (let [temp-file (str "/tmp/test-new-plan-default-" (System/currentTimeMillis) ".md")]
+      (try
+        ;; Create the file with minimal args
+        (main/new-plan-file {:file temp-file})
+        ;; Verify file was created with default name
+        (is (.exists (java.io.File. temp-file)))
+        (let [content (slurp temp-file)]
+          (is (str/includes? content "# new-plan"))
+          (is (str/includes? content "A plan for LLM collaboration")))
+        (finally
+          ;; Cleanup
+          (.delete (java.io.File. temp-file)))))))
 )

@@ -58,6 +58,7 @@
              :task
              (shell "native-image"
                     "--no-fallback"
+                    "--enable-native-access=ALL-UNNAMED"
                     "--initialize-at-build-time"
                     "-jar"
                     "target/plan.jar")}
