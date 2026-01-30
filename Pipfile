@@ -1,0 +1,10 @@
+[requires]
+python_version = "3.12"
+
+[packages]
+pandoc-plantuml-filter = "*"
+
+[dev-packages]
+
+[scripts]
+build-presentation = "pandoc presentation/plan-overview.md -t slidy -s --filter pandoc-plantuml -o presentation/plan-overview.html"

@@ -1,0 +1,41 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+
+package "Plan CLI" {
+  [main.clj] as Main
+  [config.clj] as Config
+  [db.clj] as DB
+}
+
+package "Models" {
+  [plan.clj] as Plan
+  [task.clj] as Task
+  [fact.clj] as Fact
+  [lesson.clj] as Lesson
+  [trace.clj] as Trace
+}
+
+database "SQLite" {
+  [plans]
+  [tasks]
+  [facts]
+  [lessons]
+  [traces]
+  [FTS5 indexes]
+}
+
+Main --> Config
+Main --> DB
+Main --> Plan
+Main --> Task
+Main --> Fact
+DB --> [plans]
+DB --> [tasks]
+DB --> [facts]
+Plan --> DB
+Task --> DB
+Fact --> DB
+Lesson --> DB
+Trace --> DB
+@enduml

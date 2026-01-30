@@ -2,12 +2,20 @@
   "Task entity model with Malli schemas"
   (:refer-clojure :exclude [update])
   (:require
+   [hugsql.adapter.next-jdbc :as next-adapter]
+   [hugsql.core :as hugsql]
    [malli.core :as m]
    [next.jdbc :as jdbc]
    [next.jdbc.result-set :as rs]
-   [plan.db :as db]))
+   [plan.db]))
 
 (set! *warn-on-reflection* true)
+
+;; Configure HugSQL to use next.jdbc adapter
+(hugsql/set-adapter! (next-adapter/hugsql-adapter-next-jdbc))
+
+;; Load SQL queries from external file
+(hugsql/def-db-fns "sql/tasks.sql")
 
 ;; Valid task statuses
 (def valid-statuses #{"pending" "in_progress" "completed" "failed" "blocked" "skipped"})
@@ -61,6 +69,12 @@
         ;; Ensure status defaults to 'pending' if nil
         (clojure.core/update :status #(or % "pending")))))
 
+(defn- convert-booleans [tasks]
+  (map convert-boolean tasks))
+
+;; -----------------------------------------------------------------------------
+;; Basic CRUD Functions
+
 (defn create
   "Create a new task for a plan.
    Returns the created task with generated id and timestamps.
@@ -72,93 +86,72 @@
          priority (get opts :priority 100)
          acceptance-criteria (get opts :acceptance_criteria)]
      (convert-boolean
-      (db/execute-one!
-       conn
-       {:insert-into :tasks
-        :columns [:plan_id :name :description :content :parent_id :completed :status :priority :acceptance_criteria]
-        :values [[plan-id name description content parent-id false status priority acceptance-criteria]]
-        :returning [:*]})))))
+      (task-create conn {:plan-id plan-id
+                         :name name
+                         :description description
+                         :content content
+                         :parent-id parent-id
+                         :completed false
+                         :status status
+                         :priority priority
+                         :acceptance-criteria acceptance-criteria})))))
 
 (defn get-by-id
   "Fetch a task by its id. Returns nil if not found."
   [conn id]
-  (convert-boolean
-   (db/execute-one!
-    conn
-    {:select [:*]
-     :from [:tasks]
-     :where [:= :id id]})))
+  (convert-boolean (task-get-by-id conn {:id id})))
 
 (defn get-by-plan
   "Fetch all tasks for a plan, ordered by created_at descending, then id descending."
   [conn plan-id]
-  (map convert-boolean
-       (db/execute!
-        conn
-        {:select [:*]
-         :from [:tasks]
-         :where [:= :plan_id plan-id]
-         :order-by [[:created_at :desc] [:id :desc]]})))
+  (convert-booleans (task-get-by-plan conn {:plan-id plan-id})))
+
+(defn get-by-plan-and-name
+  "Fetch a task by plan_id and name. Returns nil if not found."
+  [conn plan-id name]
+  (convert-boolean
+   (task-get-by-plan-and-name conn {:plan-id plan-id :name name})))
 
 (defn get-children
   "Fetch all child tasks for a parent task, ordered by created_at descending, then id descending."
   [conn parent-id]
-  (map convert-boolean
-       (db/execute!
-        conn
-        {:select [:*]
-         :from [:tasks]
-         :where [:= :parent_id parent-id]
-         :order-by [[:created_at :desc] [:id :desc]]})))
+  (convert-booleans (task-get-children conn {:parent-id parent-id})))
 
 (defn get-all
   "Fetch all tasks, ordered by created_at descending, then id descending."
   [conn]
-  (map convert-boolean
-       (db/execute!
-        conn
-        {:select [:*]
-         :from [:tasks]
-         :order-by [[:created_at :desc] [:id :desc]]})))
+  (convert-booleans (task-get-all conn {})))
 
 (defn update
   "Update a task's fields. Returns the updated task or nil if not found.
    When status changes, also updates status_changed_at timestamp."
-  [conn id updates]
-  (let [base-clause (select-keys updates [:name :description :content :plan_id :parent_id
-                                          :priority :acceptance_criteria])
-        set-clause (cond-> base-clause
-                     (contains? updates :completed) (assoc :completed (if (:completed updates) 1 0))
-                     (contains? updates :status) (assoc :status (:status updates)
-                                                        :status_changed_at [:raw "CURRENT_TIMESTAMP"]))]
-    (when (seq set-clause)
-      (convert-boolean
-       (db/execute-one!
-        conn
-        {:update :tasks
-         :set set-clause
-         :where [:= :id id]
-         :returning [:*]})))))
+  [conn id {:keys [name description content plan_id parent_id completed status priority acceptance_criteria] :as updates}]
+  (when (seq updates)
+    (when-let [existing (get-by-id conn id)]
+      (let [set-clause {:name (or name (:name existing))
+                        :description (or description (:description existing))
+                        :content (or content (:content existing))
+                        :plan-id (or plan_id (:plan_id existing))
+                        :parent-id (or parent_id (:parent_id existing))
+                        :completed (if (nil? completed)
+                                     (:completed existing)
+                                     (if completed 1 0))
+                        :status (or status (:status existing))
+                        :priority (or priority (:priority existing))
+                        :acceptance-criteria (or acceptance_criteria (:acceptance_criteria existing))}]
+        (convert-boolean
+         (task-update conn (assoc set-clause :id id)))))))
 
 (defn delete
   "Delete a task by id. Returns true if a task was deleted."
   [conn id]
-  (let [result (db/execute-one!
-                conn
-                {:delete-from :tasks
-                 :where [:= :id id]})]
-    ;; next.jdbc returns #:next.jdbc{:update-count N} for DELETE
-    (> (get result :next.jdbc/update-count 0) 0)))
+  (let [result (task-delete conn {:id id})]
+    (> result 0)))
 
 (defn delete-by-plan
   "Delete all tasks for a plan. Returns the number of tasks deleted."
   [conn plan-id]
-  (let [result (db/execute!
-                conn
-                {:delete-from :tasks
-                 :where [:= :plan_id plan-id]})]
-    ;; next.jdbc returns [#:next.jdbc{:update-count N}] for DML operations
-    (get (first result) :next.jdbc/update-count 0)))
+  (task-delete-by-plan conn {:plan-id plan-id}))
 
 (defn mark-completed
   "Mark a task as completed or not completed."
@@ -168,17 +161,11 @@
 (defn search
   "Search for tasks matching the query using full-text search."
   [conn query]
-  (db/search-tasks conn query))
+  ;; Keep using db/search-tasks until db.clj is migrated
+  (plan.db/search-tasks conn query))
 
-(defn get-by-plan-and-name
-  "Fetch a task by plan_id and name. Returns nil if not found."
-  [conn plan-id name]
-  (convert-boolean
-   (db/execute-one!
-    conn
-    {:select [:*]
-     :from [:tasks]
-     :where [:and [:= :plan_id plan-id] [:= :name name]]})))
+;; -----------------------------------------------------------------------------
+;; Upsert and Orphan Management
 
 (defn upsert
   "Insert or update a task by plan_id and name. Returns the task.
@@ -186,28 +173,30 @@
   [conn plan-id {:keys [name description content completed parent_id status priority acceptance_criteria]}]
   (let [status-val (or status "pending")
         priority-val (or priority 100)]
-    (jdbc/execute! conn
-                   [(str "INSERT INTO tasks (plan_id, name, description, content, completed, parent_id, status, priority, acceptance_criteria) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(plan_id, name) DO UPDATE SET "
-                         "description = excluded.description, content = excluded.content, "
-                         "completed = excluded.completed, parent_id = excluded.parent_id, "
-                         "status = excluded.status, priority = excluded.priority, "
-                         "acceptance_criteria = excluded.acceptance_criteria")
-                    plan-id name description content (if completed 1 0) parent_id status-val priority-val acceptance_criteria])
-    (convert-boolean
-     (db/execute-one! conn {:select [:*] :from [:tasks]
-                            :where [:and [:= :plan_id plan-id] [:= :name name]]}))))
+    (task-upsert conn {:plan-id plan-id
+                       :name name
+                       :description description
+                       :content content
+                       :completed (if completed 1 0)
+                       :parent-id parent_id
+                       :status status-val
+                       :priority priority-val
+                       :acceptance-criteria acceptance_criteria})
+    ;; Fetch and return the task
+    (get-by-plan-and-name conn plan-id name)))
 
 (defn delete-orphans
   "Delete tasks for a plan that are not in the given set of names.
    Returns the number of tasks deleted."
   [conn plan-id keep-names]
   (if (seq keep-names)
-    (let [result (db/execute!
-                  conn
-                  {:delete-from :tasks
-                   :where [:and [:= :plan_id plan-id] [:not-in :name keep-names]]})]
-      (get (first result) :next.jdbc/update-count 0))
+    (let [keep-set (set keep-names)
+          all-tasks (task-delete-orphans-query conn {:plan-id plan-id})
+          orphans (remove #(keep-set (:name %)) all-tasks)
+          orphan-ids (map :id orphans)]
+      (doseq [id orphan-ids]
+        (task-delete conn {:id id}))
+      (count orphan-ids))
     (delete-by-plan conn plan-id)))
 
 ;; -----------------------------------------------------------------------------
@@ -218,7 +207,7 @@
    Also updates status_changed_at timestamp."
   [conn id status]
   (when (valid-statuses status)
-    (update conn id {:status status})))
+    (convert-boolean (task-set-status conn {:id id :status status}))))
 
 (defn start-task
   "Transition task from pending to in_progress."
@@ -256,61 +245,39 @@
   [conn task-id blocks-task-id & [dependency-type]]
   (let [dep-type (or dependency-type "blocks")]
     (try
-      (jdbc/execute! conn
-                     [(str "INSERT INTO task_dependencies (task_id, blocks_task_id, dependency_type) "
-                           "VALUES (?, ?, ?) ON CONFLICT(task_id, blocks_task_id) DO NOTHING")
-                      task-id blocks-task-id dep-type])
+      (task-add-dependency conn {:task-id task-id
+                                 :blocks-task-id blocks-task-id
+                                 :dependency-type dep-type})
       true
       (catch Exception _ false))))
 
 (defn remove-dependency
   "Remove a dependency between tasks."
   [conn task-id blocks-task-id]
-  (let [result (db/execute-one!
-                conn
-                {:delete-from :task_dependencies
-                 :where [:and [:= :task_id task-id] [:= :blocks_task_id blocks-task-id]]})]
-    (> (get result :next.jdbc/update-count 0) 0)))
+  (let [result (task-remove-dependency conn {:task-id task-id
+                                             :blocks-task-id blocks-task-id})]
+    (> result 0)))
 
 (defn get-blocking-tasks
   "Get tasks that are blocking the given task (tasks that must complete first)."
   [conn task-id]
-  (map convert-boolean
-       (db/execute!
-        conn
-        {:select [:t.*]
-         :from [[:tasks :t]]
-         :join [[:task_dependencies :d] [:= :t.id :d.task_id]]
-         :where [:= :d.blocks_task_id task-id]})))
+  (convert-booleans (task-get-blocking conn {:task-id task-id})))
 
 (defn get-blocked-tasks
   "Get tasks that are blocked by the given task (tasks waiting for this one)."
   [conn task-id]
-  (map convert-boolean
-       (db/execute!
-        conn
-        {:select [:t.*]
-         :from [[:tasks :t]]
-         :join [[:task_dependencies :d] [:= :t.id :d.blocks_task_id]]
-         :where [:= :d.task_id task-id]})))
+  (convert-booleans (task-get-blocked conn {:task-id task-id})))
 
 (defn get-dependencies-for-plan
   "Get all dependencies for tasks in a plan.
    Returns list of {:task_id :blocks_task_id :dependency_type}."
   [conn plan-id]
-  (db/execute!
-   conn
-   {:select [:d.*]
-    :from [[:task_dependencies :d]]
-    :join [[:tasks :t] [:= :t.id :d.task_id]]
-    :where [:= :t.plan_id plan-id]}))
+  (task-get-dependencies-for-plan conn {:plan-id plan-id}))
 
 (defn delete-dependencies-for-task
   "Delete all dependencies involving a task (both directions)."
   [conn task-id]
-  (db/execute! conn
-               {:delete-from :task_dependencies
-                :where [:or [:= :task_id task-id] [:= :blocks_task_id task-id]]}))
+  (task-delete-dependencies-for-task conn {:task-id task-id}))
 
 ;; -----------------------------------------------------------------------------
 ;; Ready Task Functions
@@ -322,27 +289,17 @@
    - Not blocked by any incomplete task
    Returns tasks ordered by priority (lowest first), then by id."
   [conn plan-id]
-  (map convert-boolean
-       (jdbc/execute!
-        conn
-        [(str "SELECT t.* FROM tasks t "
-              "WHERE t.plan_id = ? "
-              "AND t.status = 'pending' "
-              "AND NOT EXISTS ("
-              "  SELECT 1 FROM task_dependencies d "
-              "  JOIN tasks blocker ON blocker.id = d.task_id "
-              "  WHERE d.blocks_task_id = t.id "
-              "  AND blocker.status NOT IN ('completed', 'skipped')"
-              ") "
-              "ORDER BY t.priority ASC, t.id ASC")
-         plan-id]
-        {:builder-fn next.jdbc.result-set/as-unqualified-maps})))
+  (convert-booleans (task-get-ready conn {:plan-id plan-id})))
 
 (defn get-next-task
   "Get the highest priority ready task for a plan.
    Returns nil if no tasks are ready."
   [conn plan-id]
   (first (get-ready-tasks conn plan-id)))
+
+;; -----------------------------------------------------------------------------
+;; Cycle Detection
+;; NOTE: This uses application-level traversal to avoid complex recursive SQL
 
 (defn has-cycle?
   "Check if adding a dependency from task-id to blocks-task-id would create a cycle.
@@ -358,25 +315,24 @@
         (cond
           (= current task-id) true
           (visited current) (recur visited remaining)
-          :else
-          (let [blocked-by (get-blocked-tasks conn current)
-                new-ids (remove visited (map :id blocked-by))]
-            (recur (conj visited current)
-                   (concat remaining new-ids))))))))
+          :else (let [blocked (map :blocks_task_id (jdbc/execute!
+                                                    conn
+                                                    [(str "SELECT blocks_task_id FROM task_dependencies "
+                                                          "WHERE task_id = ?")
+                                                     current]
+                                                    {:builder-fn rs/as-unqualified-maps}))]
+                  (recur (conj visited current)
+                         (concat remaining blocked))))))))
 
 ;; Malli function schemas - register at end to avoid reload issues
 (try
   (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string] [:maybe :int]] Task])
+  (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string] [:maybe :int :map]] Task])
   (m/=> get-by-id [:=> [:cat :any :int] [:maybe Task]])
   (m/=> get-by-plan [:=> [:cat :any :int] [:sequential Task]])
-  (m/=> get-by-plan-and-name [:=> [:cat :any :int :string] [:maybe Task]])
-  (m/=> get-children [:=> [:cat :any :int] [:sequential Task]])
   (m/=> get-all [:=> [:cat :any] [:sequential Task]])
   (m/=> update [:=> [:cat :any :int TaskUpdate] [:maybe Task]])
   (m/=> upsert [:=> [:cat :any :int Task] Task])
   (m/=> delete [:=> [:cat :any :int] :boolean])
-  (m/=> delete-by-plan [:=> [:cat :any :int] :int])
-  (m/=> delete-orphans [:=> [:cat :any :int [:sequential :string]] :int])
   (m/=> mark-completed [:=> [:cat :any :int :boolean] [:maybe Task]])
-  (m/=> search [:=> [:cat :any :string] [:sequential Task]])
   (catch Exception _ nil))

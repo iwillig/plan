@@ -1,0 +1,23 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+
+actor "LLM Agent" as Agent
+participant "Plan CLI" as CLI
+database "SQLite DB" as DB
+entity "Markdown Files" as MD
+
+Agent -> CLI: plan import -f plan.md
+CLI -> MD: read
+MD --> CLI: parsed data
+CLI -> DB: upsert plan, tasks, facts
+
+Agent -> CLI: task next --plan-id 1
+CLI -> DB: query ready tasks
+DB --> CLI: highest priority task
+CLI --> Agent: task details
+
+Agent -> CLI: task complete --id 1
+CLI -> DB: update status
+CLI -> DB: unblock dependents
+@enduml

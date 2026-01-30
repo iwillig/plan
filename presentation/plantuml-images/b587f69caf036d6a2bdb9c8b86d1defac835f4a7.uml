@@ -1,0 +1,16 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+
+[*] --> pending
+pending --> in_progress : start
+in_progress --> completed : complete
+in_progress --> failed : fail
+in_progress --> blocked : dependency blocks
+blocked --> in_progress : dependency resolved
+pending --> skipped : skip
+failed --> pending : retry
+
+completed --> [*]
+skipped --> [*]
+@enduml

@@ -1,0 +1,33 @@
+# Justfile for Plan presentation
+
+# Default recipe - show help
+default:
+    @just --list
+
+# Build the presentation as Slidy HTML
+build:
+    pipenv run pandoc plan-overview.md \
+        -t slidy \
+        -s \
+        --filter pandoc-plantuml \
+        -o plan-overview.html
+
+# Build and open in browser
+view: build
+    open plan-overview.html
+
+# Clean generated files
+clean:
+    rm -f plan-overview.html
+    rm -rf plantuml-images
+
+# Build PDF version (requires wkhtmltopdf or similar)
+pdf:
+    pipenv run pandoc plan-overview.md \
+        -t beamer \
+        --filter pandoc-plantuml \
+        -o plan-overview.pdf
+
+# Watch for changes and rebuild (requires fswatch)
+watch:
+    fswatch -o plan-overview.md | xargs -n1 -I{} just build

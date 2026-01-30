@@ -2,11 +2,17 @@
   (:require
    [clojure.string :as str]
    [honey.sql :as sql]
+   [hugsql.adapter.next-jdbc :as next-jdbc-adapter]
+   [hugsql.core :as hugsql]
    [malli.core :as m]
    [next.jdbc :as jdbc]
    [next.jdbc.result-set :as rs]))
 
 (set! *warn-on-reflection* true)
+
+;; Load FTS SQL queries from external file
+(hugsql/def-db-fns "sql/fts.sql"
+  {:adapter (next-jdbc-adapter/hugsql-adapter-next-jdbc {:builder-fn rs/as-unqualified-maps})})
 
 ;; Malli schemas for database operations
 (def Connection :any)
@@ -76,44 +82,28 @@
        (map #(str % "*"))
        (str/join " ")))
 
+(def ^:private default-highlight-marks {:start-mark "<b>" :end-mark "</b>"})
+
 (defn search-plans
   "Search plans using FTS5 with BM25 ranking.
    Returns results ordered by relevance (best matches first).
    Supports prefix matching (e.g., 'plan' matches 'planning')."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT p.*, rank FROM plans p "
-                         "JOIN plans_fts fts ON p.id = fts.rowid "
-                         "WHERE plans_fts MATCH ? "
-                         "ORDER BY rank") fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-search-plans conn {:query (format-fts-query query)}))
 
 (defn search-tasks
   "Search tasks using FTS5 with BM25 ranking.
    Returns results ordered by relevance (best matches first).
    Supports prefix matching."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT t.*, rank FROM tasks t "
-                         "JOIN tasks_fts fts ON t.id = fts.rowid "
-                         "WHERE tasks_fts MATCH ? "
-                         "ORDER BY rank") fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-search-tasks conn {:query (format-fts-query query)}))
 
 (defn search-facts
   "Search facts using FTS5 with BM25 ranking.
    Returns results ordered by relevance (best matches first).
    Supports prefix matching."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT f.*, rank FROM facts f "
-                         "JOIN facts_fts fts ON f.id = fts.rowid "
-                         "WHERE facts_fts MATCH ? "
-                         "ORDER BY rank") fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-search-facts conn {:query (format-fts-query query)}))
 
 ;; Highlight functions for search result snippets
 
@@ -121,47 +111,17 @@
   "Return highlighted snippets for plan search results.
    Shows context around matched terms with <b></b> markup."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT p.id, "
-                         "highlight(plans_fts, 0, '<b>', '</b>') as description_highlight, "
-                         "highlight(plans_fts, 1, '<b>', '</b>') as content_highlight "
-                         "FROM plans p "
-                         "JOIN plans_fts ON p.id = plans_fts.rowid "
-                         "WHERE plans_fts MATCH ? "
-                         "ORDER BY rank")
-                    fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-highlight-plans conn (assoc default-highlight-marks :query (format-fts-query query))))
 
 (defn highlight-tasks
   "Return highlighted snippets for task search results."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT t.id, "
-                         "highlight(tasks_fts, 0, '<b>', '</b>') as description_highlight, "
-                         "highlight(tasks_fts, 1, '<b>', '</b>') as content_highlight "
-                         "FROM tasks t "
-                         "JOIN tasks_fts ON t.id = tasks_fts.rowid "
-                         "WHERE tasks_fts MATCH ? "
-                         "ORDER BY rank")
-                    fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-highlight-tasks conn (assoc default-highlight-marks :query (format-fts-query query))))
 
 (defn highlight-facts
   "Return highlighted snippets for fact search results."
   [conn query]
-  (let [fts-query (format-fts-query query)]
-    (jdbc/execute! conn
-                   [(str "SELECT f.id, "
-                         "highlight(facts_fts, 0, '<b>', '</b>') as description_highlight, "
-                         "highlight(facts_fts, 1, '<b>', '</b>') as content_highlight "
-                         "FROM facts f "
-                         "JOIN facts_fts ON f.id = facts_fts.rowid "
-                         "WHERE facts_fts MATCH ? "
-                         "ORDER BY rank")
-                    fts-query]
-                   {:builder-fn rs/as-unqualified-maps})))
+  (fts-highlight-facts conn (assoc default-highlight-marks :query (format-fts-query query))))
 
 ;; Malli function schemas - register only if not already registered
 (try

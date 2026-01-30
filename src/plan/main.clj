@@ -9,8 +9,10 @@
    [plan.import :as import]
    [plan.markdown :as markdown]
    [plan.models.fact :as fact]
+   [plan.models.lesson :as lesson]
    [plan.models.plan :as plan]
    [plan.models.task :as task]
+   [plan.models.trace :as trace]
    [plan.serializers.markdown-v2 :as md-v2]))
 
 (set! *warn-on-reflection* true)
@@ -720,6 +722,216 @@
                                    (str "Import the plan: plan plan import -f " filename)
                                    "Start iterating with your LLM assistant"]}))))
 
+;; Trace commands (ReAct pattern)
+
+(defn trace-add
+  "Add a trace entry for task reasoning
+   Types: thought, action, observation, reflection"
+  [{:keys [task-id type content]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [task (task/get-by-id conn task-id)]
+          (if-not task
+            (do (pprint/pprint {:status :error
+                                :message (str "Task " task-id " not found")})
+                (System/exit 1))
+            (let [plan-id (:plan_id task)
+                  seq-num (trace/get-next-sequence conn plan-id)
+                  result (trace/create conn {:plan-id plan-id
+                                             :task-id task-id
+                                             :trace-type type
+                                             :sequence-num seq-num
+                                             :content content})]
+              (pprint/pprint {:status :success
+                              :trace-id (:id result)
+                              :task-id task-id
+                              :type type
+                              :sequence seq-num}))))))))
+
+(defn trace-history
+  "Show trace history for a task"
+  [{:keys [task-id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [task (task/get-by-id conn task-id)
+              traces (trace/get-by-task conn task-id)]
+          (if-not task
+            (do (pprint/pprint {:status :error
+                                :message (str "Task " task-id " not found")})
+                (System/exit 1))
+            (pprint/pprint {:task (select-keys task [:id :name :status])
+                            :traces (mapv #(select-keys % [:id :trace_type :sequence_num :content :created_at]) traces)})))))))
+
+;; Lesson commands (Reflexion pattern)
+
+(defn lesson-add
+  "Add a lesson from experience
+   Types: success_pattern, failure_pattern, constraint, technique"
+  [{:keys [plan-id task-id type trigger content]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [result (lesson/create conn {:plan-id plan-id
+                                          :task-id task-id
+                                          :lesson-type type
+                                          :trigger-condition trigger
+                                          :lesson-content content})]
+          (pprint/pprint {:status :success
+                          :lesson-id (:id result)
+                          :type type
+                          :plan-id plan-id
+                          :task-id task-id}))))))
+
+(defn lesson-list
+  "List lessons with optional filters"
+  [{:keys [plan-id min-confidence max-confidence type]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [min-conf (when min-confidence (Float/parseFloat min-confidence))
+              max-conf (when max-confidence (Float/parseFloat max-confidence))
+              ;; Get all lessons or filter by plan
+              lessons (if plan-id
+                        (lesson/get-by-plan conn plan-id)
+                        (lesson/get-all conn))
+              ;; Apply filters in Clojure
+              filtered (cond->> lessons
+                         min-conf (filter #(>= (:confidence %) min-conf))
+                         max-conf (filter #(<= (:confidence %) max-conf))
+                         type (filter #(= (:lesson_type %) type)))]
+          (pprint/pprint {:lessons (mapv #(select-keys % [:id :lesson_type :trigger_condition
+                                                          :lesson_content :confidence
+                                                          :times_validated :created_at])
+                                         filtered)
+                          :count (count filtered)}))))))
+
+(defn lesson-search
+  "Search lessons by content"
+  [{:keys [query]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [results (lesson/search conn query)]
+          (pprint/pprint {:query query
+                          :lessons (mapv #(select-keys % [:id :lesson_type :trigger_condition
+                                                          :lesson_content :confidence])
+                                         results)
+                          :count (count results)}))))))
+
+(defn lesson-validate
+  "Increase confidence in a lesson"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (lesson/validate conn id)
+        (if-let [lesson (lesson/get-by-id conn id)]
+          (pprint/pprint {:status :validated
+                          :lesson-id id
+                          :confidence (:confidence lesson)
+                          :times-validated (:times_validated lesson)})
+          (pprint/pprint {:status :error
+                          :message (str "Lesson " id " not found")}))))))
+
+(defn lesson-invalidate
+  "Decrease confidence in a lesson"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (lesson/invalidate conn id)
+        (if-let [lesson (lesson/get-by-id conn id)]
+          (pprint/pprint {:status :invalidated
+                          :lesson-id id
+                          :confidence (:confidence lesson)})
+          (pprint/pprint {:status :error
+                          :message (str "Lesson " id " not found")}))))))
+
+(defn lesson-delete
+  "Delete a lesson"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (lesson/delete conn id)
+        (pprint/pprint {:deleted {:lesson id}})))))
+
+;; Fact commands
+
+(defn fact-create
+  "Create a new fact for a plan"
+  [{:keys [plan-id name description content]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [result (fact/create conn plan-id name description content)]
+          (pprint/pprint {:status :success
+                          :fact-id (:id result)
+                          :plan-id plan-id
+                          :name name}))))))
+
+(defn fact-list
+  "List facts for a plan"
+  [{:keys [plan-id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [facts (fact/get-by-plan conn plan-id)]
+          (pprint/pprint {:facts (mapv #(select-keys % [:id :name :description]) facts)
+                          :count (count facts)}))))))
+
+(defn fact-show
+  "Show a fact with full content"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (if-let [fact-data (fact/get-by-id conn id)]
+          (pprint/pprint fact-data)
+          (pprint/pprint {:status :error
+                          :message (str "Fact " id " not found")}))))))
+
+(defn fact-update
+  "Update a fact"
+  [{:keys [id name description content]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (let [result (fact/update conn id {:name name
+                                           :description description
+                                           :content content})]
+          (if result
+            (pprint/pprint {:status :success
+                            :fact-id id
+                            :updated (keys (select-keys {:name name :description description :content content}
+                                                        [:name :description :content]))})
+            (pprint/pprint {:status :error
+                            :message (str "Fact " id " not found")})))))))
+
+(defn fact-delete
+  "Delete a fact"
+  [{:keys [id]}]
+  (let [db-path (config/db-path)]
+    (db/with-connection
+      db-path
+      (fn [conn]
+        (fact/delete conn id)
+        (pprint/pprint {:deleted {:fact id}})))))
+
 ;; CLI definition
 
 (defn load-description
@@ -833,6 +1045,82 @@
        :description "Get the next task to work on (highest priority ready task)"
        :opts [{:as "Plan ID" :option "plan-id" :required true :type :int}]
        :runs task-next}]}
+    {:command "trace"
+     :description "ReAct reasoning traces"
+     :subcommands
+     [{:command "add"
+       :description "Add a trace entry (thought, action, observation, reflection)"
+       :opts [{:as "Task ID" :option "task-id" :required true :type :int}
+              {:as "Trace type" :option "type" :required true :type :string}
+              {:as "Content" :option "content" :short "c" :type :string :required true}]
+       :runs trace-add}
+      {:command "history"
+       :description "Show trace history for a task"
+       :opts [{:as "Task ID" :option "task-id" :required true :type :int}]
+       :runs trace-history}]}
+    {:command "lesson"
+     :description "Reflexion learning from experience"
+     :subcommands
+     [{:command "add"
+       :description "Add a lesson (success_pattern, failure_pattern, constraint, technique)"
+       :opts [{:as "Lesson type" :option "type" :required true :type :string}
+              {:as "Plan ID (optional)" :option "plan-id" :type :int}
+              {:as "Task ID (optional)" :option "task-id" :type :int}
+              {:as "Trigger condition" :option "trigger" :type :string}
+              {:as "Lesson content" :option "content" :short "c" :type :string :required true}]
+       :runs lesson-add}
+      {:command "list"
+       :description "List lessons with optional filters"
+       :opts [{:as "Plan ID" :option "plan-id" :type :int}
+              {:as "Minimum confidence (0.0-1.0)" :option "min-confidence" :type :string}
+              {:as "Maximum confidence (0.0-1.0)" :option "max-confidence" :type :string}
+              {:as "Lesson type filter" :option "type" :type :string}]
+       :runs lesson-list}
+      {:command "search"
+       :description "Search lessons by content"
+       :opts [{:as "Search query" :option "query" :short "q" :type :string :required true}]
+       :runs lesson-search}
+      {:command "validate"
+       :description "Increase confidence in a lesson"
+       :opts [{:as "Lesson ID" :option "id" :required true :type :int}]
+       :runs lesson-validate}
+      {:command "invalidate"
+       :description "Decrease confidence in a lesson"
+       :opts [{:as "Lesson ID" :option "id" :required true :type :int}]
+       :runs lesson-invalidate}
+      {:command "delete"
+       :description "Delete a lesson"
+       :opts [{:as "Lesson ID" :option "id" :required true :type :int}]
+       :runs lesson-delete}]}
+    {:command "fact"
+     :description "Plan-specific facts and knowledge"
+     :subcommands
+     [{:command "create"
+       :description "Create a new fact"
+       :opts [{:as "Plan ID" :option "plan-id" :required true :type :int}
+              {:as "Fact name" :option "name" :short "n" :type :string :required true}
+              {:as "Description" :option "description" :short "d" :type :string}
+              {:as "Content" :option "content" :short "c" :type :string :required true}]
+       :runs fact-create}
+      {:command "list"
+       :description "List facts for a plan"
+       :opts [{:as "Plan ID" :option "plan-id" :required true :type :int}]
+       :runs fact-list}
+      {:command "show"
+       :description "Show a fact with full content"
+       :opts [{:as "Fact ID" :option "id" :required true :type :int}]
+       :runs fact-show}
+      {:command "update"
+       :description "Update a fact"
+       :opts [{:as "Fact ID" :option "id" :required true :type :int}
+              {:as "Name" :option "name" :short "n" :type :string}
+              {:as "Description" :option "description" :short "d" :type :string}
+              {:as "Content" :option "content" :short "c" :type :string}]
+       :runs fact-update}
+      {:command "delete"
+       :description "Delete a fact"
+       :opts [{:as "Fact ID" :option "id" :required true :type :int}]
+       :runs fact-delete}]}
     {:command "search"
      :description "Search across plans, tasks, and facts"
      :opts [{:as "Search query" :option "query" :short "q" :type :string :required true}]
