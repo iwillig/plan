@@ -2,7 +2,6 @@
   (:gen-class)
   (:require
    [cli-matic.core :as cli]
-   [clj-yaml.core :as yaml]
    [clojure.pprint :as pprint]
    [plan.config :as config]
    [plan.db :as db]
@@ -291,7 +290,7 @@
         (task/delete conn id)
         (pprint/pprint {:deleted {:task id}})))))
 
-(defn test-markdown
+(defn markdown-cmd
   "Parse a markdown file and display its contents.
    Shows raw YAML front matter, parsed front matter, body content, and rendered HTML."
   [{:keys [file]}]
@@ -331,41 +330,6 @@
           (println (:html result))
           (System/exit 0))))))
 
-(defn test-yaml
-  "Test clj-yaml parsing functionality.
-   Useful for verifying GraalVM native-image compatibility."
-  [_]
-  (println "Testing clj-yaml parsing...")
-  (let [test-yaml "name: Sample Project
-version: 1.0.0
-description: A test project for YAML parsing
-tags:
-  - clojure
-  - graalvm
-  - yaml
-config:
-  enabled: true
-  max_items: 100
-  nested:
-    key1: value1
-    key2: value2
-"
-        parsed (yaml/parse-string test-yaml)
-        roundtrip (yaml/generate-string parsed)]
-    (println "\n=== Test Input ===")
-    (println test-yaml)
-    (println "\n=== Parsed Result ===")
-    (pprint/pprint parsed)
-    (println "\n=== Roundtrip YAML ===")
-    (println roundtrip)
-    (println "\n=== Test Result ===")
-    (if (and (= "Sample Project" (:name parsed))
-             (= "1.0.0" (:version parsed))
-             (= 3 (count (:tags parsed)))
-             (true? (get-in parsed [:config :enabled])))
-      (println "SUCCESS: clj-yaml parsing works correctly!")
-      (do (println "FAILURE: clj-yaml parsing failed!")
-          (System/exit 1)))))
 
 (defn plan-export
   "Export a plan to a markdown file using v2 format."
@@ -507,13 +471,10 @@ config:
      :description "Search across plans, tasks, and facts"
      :opts [{:as "Search query" :option "query" :short "q" :type :string :required true}]
      :runs search}
-    {:command "test-markdown"
+    {:command "markdown"
      :description "Parse a markdown file and display its contents"
      :opts [{:as "Markdown file to parse" :option "file" :short "f" :type :string}]
-     :runs test-markdown}
-    {:command "test-yaml"
-     :description "Test clj-yaml parsing (verifies GraalVM compatibility)"
-     :runs test-yaml}]})
+     :runs markdown-cmd}]})
 
 (defn -main [& args]
   (cli/run-cmd args cli-definition))
