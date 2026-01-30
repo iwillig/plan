@@ -1,383 +1,355 @@
 # LLM Agent Planning Guide
 
-A guide to effective planning practices for LLM agents using the Plan tool.
+A comprehensive guide to using the Plan tool for LLM agent workflows. This guide covers task management, reasoning traces (ReAct), and learning from experience (Reflexion).
 
-## Why External Planning Matters
+## Quick Navigation
 
-LLMs face fundamental limitations that external planning tools address:
+| Guide | Purpose |
+|-------|---------|
+| **This document** | Overview and quick reference |
+| [ReAct Pattern](react-pattern.md) | Detailed guide to reasoning traces |
+| [Reflexion Pattern](reflexion-pattern.md) | Detailed guide to learning from experience |
+| [Agent Workflow](agent-workflow.md) | Complete workflow with examples |
+
+## Why External Planning for LLM Agents?
 
 | Limitation | Problem | How Plan Solves It |
 |------------|---------|-------------------|
-| **Context window** | Lose track of progress in long sessions | Persistent task state in database |
-| **No memory** | Repeat same mistakes across sessions | Facts capture learned constraints |
-| **Tunnel vision** | Focus on immediate code, forget big picture | Hierarchical plan structure |
-| **Session boundaries** | Work lost between conversations | Markdown export/import for continuity |
+| **Context window** | Lose track of progress | Persistent task state in SQLite |
+| **No memory** | Repeat same mistakes | Lessons capture learnings across sessions |
+| **Session boundaries** | Work lost between chats | Markdown export/import for continuity |
+| **Black-box reasoning** | Can't debug decisions | ReAct traces externalize thinking |
+| **No learning** | Don't improve over time | Reflexion with confidence scoring |
 
 ## Core Concepts
 
-### Plans
+### Task Status Lifecycle
 
-A plan is a container for related work. It has:
-- **Name**: Unique identifier (used for import/export matching)
-- **Description**: Short summary of the goal
-- **Content**: Full markdown body with context, notes, strategy
-- **Tasks**: Actionable work items
-- **Facts**: Discovered knowledge and constraints
-
-### Tasks
-
-Tasks are completable work items. Good tasks are:
-- **Atomic**: One clear action
-- **Verifiable**: Can confirm when done
-- **Scoped**: Completable in one focused session
-
-| Task Quality | Example | Verdict |
-|--------------|---------|---------|
-| Too big | "Build authentication system" | Break down |
-| Right size | "Add password hash column to users table" | Good |
-| Too small | "Import bcrypt library" | Combine with related work |
-
-Tasks support one level of nesting for subtasks (max depth: 2).
-
-### Facts (Critical for LLMs)
-
-Facts are the most underutilized yet powerful feature. They capture knowledge discovered during work that prevents repeated mistakes.
-
-**When to create a fact:**
-- Discovered an unexpected API limitation
-- Found a non-obvious codebase convention
-- Hit an error that took time to debug
-- Learned a constraint not in the documentation
-
-**Examples:**
-
-```yaml
-facts:
-- name: API Rate Limit
-  description: External service constraint
-  content: "Stripe API limits to 100 req/sec. Must implement exponential backoff."
-
-- name: User ID Type
-  description: Schema discovery
-  content: "user_id is UUID not integer. Broke 3 tests before finding this."
-
-- name: Test Database
-  description: Environment setup
-  content: "Tests require POSTGRES_URL env var. CI uses localhost:5433."
-
-- name: CSS Framework
-  description: Codebase convention
-  content: "Project uses Tailwind. Don't add inline styles or new CSS files."
+```
+                    ┌─────────┐
+                    │ blocked │◀──────────┐
+                    └────┬────┘           │
+                         │ unblock        │ blocker found
+                         ▼                │
+┌─────────┐ start  ┌────────────┐        │
+│ pending │───────▶│ in_progress│────────┤
+└─────────┘        └─────┬──────┘        │
+                         │               │
+              ┌──────────┼──────────┐    │
+              │          │          │    │
+              ▼          ▼          ▼    │
+         ┌─────────┐ ┌──────┐ ┌─────────┐
+         │completed│ │failed│ │ skipped │
+         └─────────┘ └──────┘ └─────────┘
 ```
 
-**Rule**: If you spent more than 2 minutes debugging something non-obvious, create a fact.
+### Task Dependencies
 
-## Workflow Patterns
+Tasks can block other tasks. A blocked task won't appear in `task ready` or `task next` until its blockers complete.
 
-### Pattern 1: Research-Plan-Execute
-
-Best for well-defined features or bug fixes.
-
-```bash
-# 1. Create plan file from template
-plan new -n "add-user-export" -f add-user-export.md
-
-# 2. Edit markdown: add context, break into tasks, note known constraints
-# (LLM or human edits the file directly)
-
-# 3. Import to database
-plan import -f add-user-export.md
-
-# 4. Work through tasks, marking complete as you go
-plan task update --id 1 --completed true
-plan task update --id 2 --completed true
-
-# 5. Add facts when you discover constraints
-plan fact create --plan-id 1 -n "Export Size Limit" \
-  -c "CSV export times out over 10k rows. Need pagination."
-
-# 6. Export updated state for next session
-plan export --id 1 -f add-user-export.md
-```
-
-### Pattern 2: Iterative Discovery
-
-Best for investigation, debugging, or unclear scope.
-
-```bash
-# 1. Start minimal
-plan plan create -n "investigate-memory-leak" -d "Users report high memory usage"
-
-# 2. Add facts as you investigate
-plan fact create --plan-id 1 -n "Heap Profile" \
-  -c "80% of retained memory is in ImageCache. Not being evicted."
-
-plan fact create --plan-id 1 -n "Root Cause" \
-  -c "Cache key includes timestamp, so same image cached multiple times."
-
-# 3. Add tasks once approach is clear
-plan task create --plan-id 1 -n "Fix cache key to use image hash only"
-plan task create --plan-id 1 -n "Add cache size limit with LRU eviction"
-plan task create --plan-id 1 -n "Add memory usage monitoring"
-
-# 4. Execute and complete
-plan task update --id 1 --completed true
-```
-
-### Pattern 3: Multi-Session Handoff
-
-Best for work spanning multiple sessions or agents.
-
-```bash
-# Session 1: Setup and partial work
-plan plan create -n "api-v2-migration" -d "Migrate from REST to GraphQL"
-plan task create --plan-id 1 -n "Define GraphQL schema"
-plan task create --plan-id 1 -n "Implement resolvers"
-plan task create --plan-id 1 -n "Update client code"
-plan task create --plan-id 1 -n "Add integration tests"
-
-# Do some work...
-plan task update --id 1 --completed true
-
-# Export state for next session
-plan export --id 1 -f api-v2-migration.md
-
-# Session 2: Resume work
-plan import -f api-v2-migration.md  # Sync any manual edits
-plan plan show --id 1               # Review current state
-
-# Continue working...
-plan task update --id 2 --completed true
-
-# Add discovered fact
-plan fact create --plan-id 1 -n "Resolver Pattern" \
-  -c "Use dataloader for N+1 prevention. See src/graphql/loaders.js for pattern."
-```
-
-## Task Decomposition Guidelines
-
-### Signs a Task Needs Breaking Down
-
-- Contains "and" (do X and Y)
-- Estimated at more than 2 hours of work
-- Has unclear completion criteria
-- Touches more than 3 files
-- Requires multiple distinct skills
-
-### Decomposition Example
-
-**Before:**
 ```yaml
 tasks:
-- name: Add user authentication
-  completed: false
+- name: Create database schema
+  status: pending
+  priority: 10
+
+- name: Implement API endpoints
+  status: pending
+  priority: 20
+  blocked_by:
+    - Create database schema  # Can't start until schema exists
 ```
 
-**After:**
+### Task Priority
+
+Lower numbers = higher priority. `task next` returns the highest-priority ready task.
+
+```bash
+plan task next --plan-id 1
+# Returns: lowest priority number among unblocked pending tasks
+```
+
+### Reasoning Traces (ReAct)
+
+Externalize your thinking process:
+
+| Type | When to Use |
+|------|-------------|
+| `thought` | Reasoning about what to do |
+| `action` | What you're doing |
+| `observation` | What you see/learn |
+| `reflection` | Meta-analysis of approach |
+
+```bash
+plan trace add --task-id 1 --type thought -c "Need to check existing auth patterns"
+plan trace add --task-id 1 --type action -c "Searching: grep -r 'authenticate' src/"
+plan trace add --task-id 1 --type observation -c "Found JWT helper in src/utils/jwt.js"
+```
+
+### Lessons (Reflexion)
+
+Capture learnings for future use:
+
+| Type | When to Use |
+|------|-------------|
+| `success_pattern` | Something that worked well |
+| `failure_pattern` | Something that failed (and why) |
+| `constraint` | Discovered limitation |
+| `technique` | Useful approach to remember |
+
+```bash
+plan lesson add --type constraint --trigger "S3 uploads" \
+  -c "Files over 5GB require multipart upload. Single PUT fails silently."
+```
+
+### Facts
+
+Plan-specific knowledge that informs tasks:
+
+```bash
+plan fact create --plan-id 1 -n "API Rate Limit" \
+  -c "External API limited to 100 req/min. Implement backoff."
+```
+
+## The Agent Work Loop
+
+```bash
+# 1. Get next task
+plan task next --plan-id 1
+
+# 2. Check for relevant lessons
+plan lesson search -q "relevant keywords"
+
+# 3. Start the task
+plan task start --id N
+
+# 4. Work with ReAct traces
+plan trace add --task-id N --type thought -c "..."
+plan trace add --task-id N --type action -c "..."
+plan trace add --task-id N --type observation -c "..."
+
+# 5. Complete or fail
+plan task complete --id N   # or: plan task fail --id N
+
+# 6. Reflect and learn
+plan trace add --task-id N --type reflection -c "..."
+plan lesson add --type success_pattern -c "..."
+
+# 7. Repeat
+```
+
+## Command Reference
+
+### Task Commands
+
+```bash
+# Lifecycle
+plan task next --plan-id 1              # Get highest priority ready task
+plan task ready --plan-id 1             # List all ready tasks
+plan task start --id N                  # pending → in_progress
+plan task complete --id N               # → completed
+plan task fail --id N                   # → failed
+plan task update --id N --status blocked
+
+# Dependencies
+plan task depends --id 2 --on 1         # Task 2 blocked by task 1
+plan task show --id N                   # View task with dependencies
+
+# CRUD
+plan task list --plan-id 1
+plan task create --plan-id 1 -n "Name" -d "Description" --priority 10
+plan task update --id N --name "New name"
+plan task delete --id N
+```
+
+### Trace Commands
+
+```bash
+plan trace add --task-id N --type thought -c "content"
+plan trace add --task-id N --type action -c "content"
+plan trace add --task-id N --type observation -c "content"
+plan trace add --task-id N --type reflection -c "content"
+plan trace history --task-id N
+```
+
+### Lesson Commands
+
+```bash
+plan lesson add --type success_pattern -c "content"
+plan lesson add --type failure_pattern --trigger "context" -c "content"
+plan lesson add --type constraint --task-id N -c "content"
+plan lesson add --type technique --plan-id N -c "content"
+plan lesson search -q "keywords"
+plan lesson list --min-confidence 0.7
+plan lesson validate --id N             # Increase confidence
+plan lesson invalidate --id N           # Decrease confidence
+plan lesson delete --id N
+```
+
+### Plan Commands
+
+```bash
+plan plan list
+plan plan create -n "Name" -d "Description"
+plan plan show --id N
+plan plan export --id N -f file.md
+plan plan import -f file.md
+plan plan import -f file.md -p          # Preview first
+plan plan delete --id N
+```
+
+### Other Commands
+
+```bash
+plan init                               # Initialize database
+plan new -n "name" -f file.md           # Create plan template
+plan search -q "keyword"                # Search everything
+plan config                             # Show configuration
+```
+
+## Markdown Format (v3)
+
 ```yaml
-tasks:
-- name: Add user authentication
-  completed: false
-  tasks:
-  - name: Create users table with email and password_hash
-    completed: false
-  - name: Add POST /api/register endpoint
-    completed: false
-  - name: Add POST /api/login endpoint with JWT
-    completed: false
-  - name: Add auth middleware for protected routes
-    completed: false
-  - name: Add tests for auth flow
-    completed: false
-```
-
-### Task Naming Conventions
-
-Use action verbs and specific scope:
-
-| Bad | Good |
-|-----|------|
-| "Authentication" | "Add JWT authentication to API" |
-| "Fix bug" | "Fix null pointer in UserService.getById" |
-| "Tests" | "Add unit tests for PaymentProcessor" |
-| "Refactor" | "Extract email validation to shared util" |
-
-## Markdown Format Best Practices
-
-### Structure Your Plan Content
-
-The markdown body (after front matter) should provide context that helps future sessions understand the work:
-
-```markdown
 ---
-name: Feature Name
-description: One-line summary
+format_version: 3
+description: Plan description
 completed: false
 tasks:
-  # ... tasks here
+- name: First task
+  status: pending
+  priority: 10
+  acceptance_criteria: |
+    - Criterion 1
+    - Criterion 2
+- name: Second task
+  status: pending
+  priority: 20
+  blocked_by:
+    - First task
+  blocks:
+    - Third task
+- name: Third task
+  status: blocked
+  priority: 30
 facts:
-  # ... facts here
+- name: Important constraint
+  content: Details here
 ---
 
-# Feature Name
+# Plan Title
 
-## Goal
-What are we trying to achieve? What does success look like?
-
-## Context
-Why is this work needed? What problem does it solve?
-
-## Approach
-High-level strategy. Why this approach over alternatives?
-
-## Open Questions
-Things still to figure out (update as resolved).
-
-## Notes
-Anything else useful for future sessions.
+Markdown content goes here...
 ```
 
-### Keep Facts Actionable
+### Status Values
 
-Facts should be immediately useful, not just observations:
+- `pending` - Not started
+- `in_progress` - Currently being worked on
+- `completed` - Successfully finished
+- `failed` - Attempted but failed
+- `blocked` - Waiting on dependencies
+- `skipped` - Intentionally not doing
 
-| Passive (Less Useful) | Actionable (More Useful) |
-|-----------------------|--------------------------|
-| "The API is slow" | "API calls over 100ms. Cache responses for 5 min." |
-| "Tests are flaky" | "UserTest.login flaky due to timing. Add explicit wait." |
-| "Config is complex" | "Config loads from ENV > config.json > defaults. Check in that order." |
+### Import/Export
+
+```bash
+# Export preserves all v3 fields
+plan export --id 1 -f my-plan.md
+
+# Import handles v2 and v3 formats
+plan import -f my-plan.md -p    # Preview changes
+plan import -f my-plan.md       # Apply changes
+```
+
+## Best Practices
+
+### Task Design
+
+| Aspect | Good | Bad |
+|--------|------|-----|
+| Size | "Add password hash column" | "Build auth system" |
+| Naming | "Fix null check in UserService.getById" | "Fix bug" |
+| Criteria | Specific, verifiable | Vague |
+| Dependencies | Explicit in blocked_by | Assumed |
+
+### Using Priorities
+
+```yaml
+# Lower number = higher priority
+tasks:
+- name: Critical security fix
+  priority: 1
+- name: Normal feature work
+  priority: 50
+- name: Nice-to-have improvement
+  priority: 100
+```
+
+### When to Create Traces
+
+- **thought**: Before any significant action
+- **action**: When running commands, making changes
+- **observation**: After seeing results, errors, output
+- **reflection**: After completing/failing task, at session end
+
+### When to Create Lessons
+
+- Discovered unexpected behavior
+- Found a working solution after struggle
+- Made a mistake worth remembering
+- Learned a codebase pattern
+
+### When to Create Facts
+
+- Plan-specific constraints
+- Environment details (API keys, URLs)
+- Discovered requirements
+- Decisions made and rationale
 
 ## Integration Examples
 
-### Claude Code / Agentic IDE
-
-Add to your system prompt or CLAUDE.md:
+### Claude Code / CLAUDE.md
 
 ```markdown
 ## Planning Protocol
 
-Before starting any multi-step task:
-1. Check for existing plan: `plan search -q "relevant keywords"`
-2. Create or resume plan: `plan plan show --id X` or `plan plan create -n "task-name"`
+Before multi-step tasks:
+1. `plan task next --plan-id N` - Get current task
+2. `plan lesson search -q "..."` - Check for relevant lessons
 
 During work:
-3. Mark tasks complete as you finish them
-4. Create facts for any non-obvious discoveries
-5. Add new tasks if scope expands
+3. Record traces with `plan trace add`
+4. Create facts for discoveries
 
-After completing work:
-6. Export plan state: `plan export --id X -f task-name.md`
+After completion:
+5. `plan task complete --id N`
+6. `plan lesson add` for reusable learnings
+7. `plan export` at session end
 ```
 
-### LangChain / Tool-Using Agents
+### Autonomous Agent
 
 ```python
-from langchain.tools import Tool
-import subprocess
-import json
+def agent_loop(plan_id):
+    while task := get_next_task(plan_id):
+        lessons = search_lessons(task.description)
+        start_task(task.id)
 
-def run_plan_cmd(args: list[str]) -> str:
-    result = subprocess.run(["plan"] + args, capture_output=True, text=True)
-    return result.stdout or result.stderr
+        try:
+            result = execute_with_traces(task, lessons)
+            complete_task(task.id)
+            capture_success_lessons(task, result)
+            validate_helpful_lessons(lessons)
+        except Exception as e:
+            fail_task(task.id)
+            capture_failure_lesson(task, e)
 
-plan_tools = [
-    Tool(
-        name="show_plan",
-        description="Show current plan state with all tasks and facts",
-        func=lambda plan_id: run_plan_cmd(["plan", "show", "--id", plan_id])
-    ),
-    Tool(
-        name="complete_task",
-        description="Mark a task as completed. Use after finishing work.",
-        func=lambda task_id: run_plan_cmd(["task", "update", "--id", task_id, "--completed", "true"])
-    ),
-    Tool(
-        name="add_fact",
-        description="Record a discovered constraint or learning. Use when you find something non-obvious.",
-        func=lambda args: run_plan_cmd(["fact", "create", "--plan-id", args["plan_id"],
-                                        "-n", args["name"], "-c", args["content"]])
-    ),
-    Tool(
-        name="search_plans",
-        description="Search across all plans, tasks, and facts",
-        func=lambda query: run_plan_cmd(["search", "-q", query])
-    ),
-]
+        export_plan(plan_id)
 ```
 
-### Autonomous Agent Loop
+## Further Reading
 
-```python
-def agent_work_loop(plan_id: int):
-    while True:
-        # 1. Check current state
-        state = json.loads(run_plan_cmd(["plan", "show", "--id", str(plan_id)]))
-
-        # 2. Find next incomplete task
-        pending = [t for t in state["tasks"] if not t["completed"]]
-        if not pending:
-            print("All tasks complete!")
-            break
-
-        task = pending[0]
-
-        # 3. Execute task (your agent logic here)
-        result = execute_task(task)
-
-        # 4. Record any discoveries
-        if result.get("discoveries"):
-            for fact in result["discoveries"]:
-                run_plan_cmd(["fact", "create", "--plan-id", str(plan_id),
-                             "-n", fact["name"], "-c", fact["content"]])
-
-        # 5. Mark complete if successful
-        if result["success"]:
-            run_plan_cmd(["task", "update", "--id", str(task["id"]), "--completed", "true"])
-
-        # 6. Export state for recovery
-        run_plan_cmd(["plan", "export", "--id", str(plan_id), "-f", f"plan-{plan_id}.md"])
-```
-
-## Anti-Patterns to Avoid
-
-| Anti-Pattern | Why It's Bad | Solution |
-|--------------|--------------|----------|
-| **One giant task** | No progress visibility, overwhelming | Break into 3-7 subtasks |
-| **No facts** | Repeat same debugging, waste time | Capture constraints immediately |
-| **Stale exports** | Markdown and DB out of sync | Export after each session |
-| **Vague task names** | Can't verify completion | Action verb + specific scope |
-| **Orphaned plans** | Database clutter | Delete or complete old plans |
-| **Tasks as notes** | Mixing concerns | Use content field for notes, tasks for actions |
-| **Skipping preview** | Destructive imports | Always `plan import -f file.md -p` first |
-
-## Quick Reference
-
-```bash
-# Initialize (first time only)
-plan init
-
-# Create new plan from template
-plan new -n "my-feature" -f my-feature.md
-
-# Import plan from markdown
-plan import -f my-feature.md -p    # Preview first
-plan import -f my-feature.md       # Then import
-
-# View plan state
-plan plan show --id 1
-plan plan list
-
-# Work with tasks
-plan task create --plan-id 1 -n "Task name" -d "Description"
-plan task update --id 1 --completed true
-plan task list --plan-id 1
-
-# Capture knowledge
-plan fact create --plan-id 1 -n "Fact name" -c "What you learned"
-
-# Search everything
-plan search -q "authentication"
-
-# Export for next session
-plan export --id 1 -f my-feature.md
-```
+- [ReAct Pattern](react-pattern.md) - Deep dive on reasoning traces
+- [Reflexion Pattern](reflexion-pattern.md) - Deep dive on learning
+- [Agent Workflow](agent-workflow.md) - Complete worked example
+- [Example Plan](../examples/complete-example.md) - Sample markdown format
