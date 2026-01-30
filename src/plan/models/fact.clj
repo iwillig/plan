@@ -143,6 +143,84 @@
       (get (first result) :next.jdbc/update-count 0))
     (delete-by-plan conn plan-id)))
 
+;; -----------------------------------------------------------------------------
+;; Fact-Task Link Functions
+
+(def valid-link-types #{"informs" "discovered_during" "blocks" "required_context"})
+
+(defn link-to-task
+  "Create a link between a fact and a task.
+   Link types: informs, discovered_during, blocks, required_context"
+  [conn fact-id task-id link-type]
+  (when (valid-link-types link-type)
+    (try
+      (jdbc/execute! conn
+                     [(str "INSERT INTO fact_task_links (fact_id, task_id, link_type) "
+                           "VALUES (?, ?, ?) ON CONFLICT(fact_id, task_id, link_type) DO NOTHING")
+                      fact-id task-id link-type])
+      true
+      (catch Exception _ false))))
+
+(defn unlink-from-task
+  "Remove a link between a fact and a task."
+  [conn fact-id task-id link-type]
+  (let [result (db/execute-one!
+                conn
+                {:delete-from :fact_task_links
+                 :where [:and
+                         [:= :fact_id fact-id]
+                         [:= :task_id task-id]
+                         [:= :link_type link-type]]})]
+    (> (get result :next.jdbc/update-count 0) 0)))
+
+(defn get-linked-tasks
+  "Get all tasks linked to a fact."
+  [conn fact-id]
+  (db/execute!
+   conn
+   {:select [:t.* :ftl.link_type]
+    :from [[:tasks :t]]
+    :join [[:fact_task_links :ftl] [:= :t.id :ftl.task_id]]
+    :where [:= :ftl.fact_id fact-id]}))
+
+(defn get-linked-facts
+  "Get all facts linked to a task."
+  [conn task-id]
+  (db/execute!
+   conn
+   {:select [:f.* :ftl.link_type]
+    :from [[:facts :f]]
+    :join [[:fact_task_links :ftl] [:= :f.id :ftl.fact_id]]
+    :where [:= :ftl.task_id task-id]}))
+
+(defn get-facts-by-link-type
+  "Get facts linked to a task by a specific link type."
+  [conn task-id link-type]
+  (db/execute!
+   conn
+   {:select [:f.*]
+    :from [[:facts :f]]
+    :join [[:fact_task_links :ftl] [:= :f.id :ftl.fact_id]]
+    :where [:and [:= :ftl.task_id task-id] [:= :ftl.link_type link-type]]}))
+
+(defn delete-links-for-fact
+  "Delete all links for a fact."
+  [conn fact-id]
+  (let [result (db/execute!
+                conn
+                {:delete-from :fact_task_links
+                 :where [:= :fact_id fact-id]})]
+    (get (first result) :next.jdbc/update-count 0)))
+
+(defn delete-links-for-task
+  "Delete all links for a task."
+  [conn task-id]
+  (let [result (db/execute!
+                conn
+                {:delete-from :fact_task_links
+                 :where [:= :task_id task-id]})]
+    (get (first result) :next.jdbc/update-count 0)))
+
 ;; Malli function schemas - register at end to avoid reload issues
 (try
   (m/=> create [:=> [:cat :any :int :string [:maybe :string] [:maybe :string]] Fact])

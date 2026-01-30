@@ -1,7 +1,8 @@
 (ns plan.import
   "Import plans from markdown files with upsert semantics.
    Uses names as identifiers instead of IDs for idempotent imports.
-   All import operations are atomic (wrapped in transactions)."
+   All import operations are atomic (wrapped in transactions).
+   Supports v3 format with task dependencies."
   (:require
    [next.jdbc :as jdbc]
    [plan.models.fact :as fact]
@@ -10,6 +11,37 @@
    [plan.serializers.markdown-v2 :as md]))
 
 (set! *warn-on-reflection* true)
+
+;; -----------------------------------------------------------------------------
+;; Dependency Import Helpers
+
+(defn- import-dependencies
+  "Import task dependencies from parsed markdown data.
+   Dependencies are specified as {:from task-name :to task-name}
+   where the 'from' task blocks the 'to' task.
+   Returns the count of dependencies created."
+  [conn plan-id dependencies]
+  (let [;; Build name->id map for all tasks in the plan
+        tasks (task/get-by-plan conn plan-id)
+        name->id (into {} (map (juxt :name :id) tasks))]
+    (reduce
+     (fn [count {:keys [from to]}]
+       (let [from-id (name->id from)
+             to-id (name->id to)]
+         (if (and from-id to-id)
+           (do
+             (task/add-dependency conn from-id to-id)
+             (inc count))
+           count)))
+     0
+     dependencies)))
+
+(defn- clear-plan-dependencies
+  "Clear all dependencies for tasks in a plan."
+  [conn plan-id]
+  (let [tasks (task/get-by-plan conn plan-id)]
+    (doseq [task-item tasks]
+      (task/delete-dependencies-for-task conn (:id task-item)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Import Functions
@@ -21,14 +53,16 @@
    - Otherwise creates a new plan
    - Tasks and facts are matched by name within the plan
    - Tasks/facts in the database but not in the import are deleted
+   - Dependencies are recreated from the parsed data
    Returns the imported plan with :tasks and :facts counts.
 
    Example:
    (import-plan conn {:plan {:name \"Project\" ...}
                       :tasks [...]
-                      :facts [...]})
+                      :facts [...]
+                      :dependencies [{:from \"task1\" :to \"task2\"}]})
    ; => {:id 1 :name \"Project\" :tasks-imported 3 :facts-imported 2}"
-  [conn {:keys [plan tasks facts]}]
+  [conn {:keys [plan tasks facts dependencies]}]
   (jdbc/with-transaction [tx conn]
     (let [plan-name (:name plan)]
       ;; Upsert the plan
@@ -36,10 +70,10 @@
       ;; Get the plan (now it definitely exists)
       (let [db-plan (plan/get-by-name tx plan-name)
             plan-id (:id db-plan)
-            ;; Upsert tasks
+            ;; Upsert tasks (with new v3 fields)
             task-names (mapv :name tasks)
-            _ (doseq [task tasks]
-                (task/upsert tx plan-id task))
+            _ (doseq [task-item tasks]
+                (task/upsert tx plan-id task-item))
             ;; Delete orphaned tasks
             tasks-deleted (task/delete-orphans tx plan-id task-names)
             ;; Upsert facts
@@ -47,12 +81,16 @@
             _ (doseq [f facts]
                 (fact/upsert tx plan-id f))
             ;; Delete orphaned facts
-            facts-deleted (fact/delete-orphans tx plan-id fact-names)]
+            facts-deleted (fact/delete-orphans tx plan-id fact-names)
+            ;; Clear and re-import dependencies
+            _ (clear-plan-dependencies tx plan-id)
+            deps-imported (import-dependencies tx plan-id (or dependencies []))]
         (assoc db-plan
                :tasks-imported (count tasks)
                :tasks-deleted tasks-deleted
                :facts-imported (count facts)
-               :facts-deleted facts-deleted)))))
+               :facts-deleted facts-deleted
+               :dependencies-imported deps-imported)))))
 
 (defn import-from-file
   "Import a plan from a markdown file within a transaction.

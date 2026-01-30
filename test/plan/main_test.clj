@@ -17,21 +17,50 @@
     (let [tables (db/execute! helper/*conn* {:select [:name] :from :sqlite_master :where [:= :type "table"] :order-by [:name]})
           indexes (db/execute! helper/*conn* {:select [:name] :from :sqlite_master :where [:and [:= :type "index"] [:like :name "idx_%"]] :order-by [:name]})
           triggers (db/execute! helper/*conn* {:select [:name] :from :sqlite_master :where [:= :type "trigger"] :order-by [:name]})
-          table-names (set (map :name tables))]
+          table-names (set (map :name tables))
+          index-names (set (map :name indexes))
+          trigger-names (set (map :name triggers))]
       ;; Check main tables exist
       (is (contains? table-names "plans"))
       (is (contains? table-names "tasks"))
       (is (contains? table-names "facts"))
+      ;; Check new Phase 1-4 tables exist
+      (is (contains? table-names "task_dependencies"))
+      (is (contains? table-names "traces"))
+      (is (contains? table-names "lessons"))
+      (is (contains? table-names "fact_task_links"))
       ;; Check FTS tables exist
       (is (contains? table-names "plans_fts"))
       (is (contains? table-names "tasks_fts"))
       (is (contains? table-names "facts_fts"))
-      ;; Check indexes (includes unique constraints for name fields)
-      (is (= ["idx_facts_plan_id" "idx_facts_plan_name" "idx_tasks_parent_id" "idx_tasks_plan_id" "idx_tasks_plan_name"]
-             (map :name indexes)))
-      ;; Check triggers exist
-      (is (= ["facts_ad" "facts_ai" "facts_au" "plans_ad" "plans_ai" "plans_au" "tasks_ad" "tasks_ai" "tasks_au"]
-             (map :name triggers))))))
+      (is (contains? table-names "traces_fts"))
+      (is (contains? table-names "lessons_fts"))
+      ;; Check core indexes exist
+      (is (contains? index-names "idx_facts_plan_id"))
+      (is (contains? index-names "idx_facts_plan_name"))
+      (is (contains? index-names "idx_tasks_parent_id"))
+      (is (contains? index-names "idx_tasks_plan_id"))
+      (is (contains? index-names "idx_tasks_plan_name"))
+      ;; Check new indexes exist
+      (is (contains? index-names "idx_task_deps_task_id"))
+      (is (contains? index-names "idx_task_deps_blocks_task_id"))
+      (is (contains? index-names "idx_traces_plan_id"))
+      (is (contains? index-names "idx_lessons_plan_id"))
+      (is (contains? index-names "idx_fact_task_links_fact_id"))
+      ;; Check core FTS triggers exist
+      (is (contains? trigger-names "facts_ad"))
+      (is (contains? trigger-names "facts_ai"))
+      (is (contains? trigger-names "facts_au"))
+      (is (contains? trigger-names "plans_ad"))
+      (is (contains? trigger-names "plans_ai"))
+      (is (contains? trigger-names "plans_au"))
+      (is (contains? trigger-names "tasks_ad"))
+      (is (contains? trigger-names "tasks_ai"))
+      (is (contains? trigger-names "tasks_au"))
+      ;; Check new triggers exist
+      (is (contains? trigger-names "traces_ai"))
+      (is (contains? trigger-names "lessons_ai"))
+      (is (contains? trigger-names "tasks_status_check")))))
 
 (deftest schema-is-isolated-test
   (testing "each test gets a fresh database"
@@ -230,67 +259,66 @@
         (is (= "task-3" (:name (first tasks))))
         (is (= "task-1" (:name (last tasks)))))))
 
-(deftest search-test
-  (testing "search finds matches across plans, tasks, and facts"
-    (main/create-schema! helper/*conn*)
-    (let [plan (plan/create helper/*conn* "searchable-plan" "Searchable plan" "Plan content")]
-      (task/create helper/*conn* (:id plan) "searchable-task" "Searchable task" "Task content" nil)
-      (fact/create helper/*conn* (:id plan) "searchable-fact" "Searchable fact" "Fact content"))
+  (deftest search-test
+    (testing "search finds matches across plans, tasks, and facts"
+      (main/create-schema! helper/*conn*)
+      (let [plan (plan/create helper/*conn* "searchable-plan" "Searchable plan" "Plan content")]
+        (task/create helper/*conn* (:id plan) "searchable-task" "Searchable task" "Task content" nil)
+        (fact/create helper/*conn* (:id plan) "searchable-fact" "Searchable fact" "Fact content"))
     ;; Search for "searchable" should find all three
-    (let [plan-results (db/search-plans helper/*conn* "searchable")
-          task-results (db/search-tasks helper/*conn* "searchable")
-          fact-results (db/search-facts helper/*conn* "searchable")]
-      (is (= 1 (count plan-results)))
-      (is (= 1 (count task-results)))
-      (is (= 1 (count fact-results))))))
+      (let [plan-results (db/search-plans helper/*conn* "searchable")
+            task-results (db/search-tasks helper/*conn* "searchable")
+            fact-results (db/search-facts helper/*conn* "searchable")]
+        (is (= 1 (count plan-results)))
+        (is (= 1 (count task-results)))
+        (is (= 1 (count fact-results))))))
 
-(deftest cli-definition-test
-  (testing "cli-definition has correct structure"
-    (is (= "plan" (:app-name main/cli-definition)))
-    (is (= "0.1.0" (:version main/cli-definition)))
-    (is (some? (:description main/cli-definition)))
-    (is (seq (:subcommands main/cli-definition)))
+  (deftest cli-definition-test
+    (testing "cli-definition has correct structure"
+      (is (= "plan" (:app-name main/cli-definition)))
+      (is (= "0.1.0" (:version main/cli-definition)))
+      (is (some? (:description main/cli-definition)))
+      (is (seq (:subcommands main/cli-definition)))
     ;; Check for expected top-level commands
-    (let [commands (set (map :command (:subcommands main/cli-definition)))]
-      (is (contains? commands "init"))
-      (is (contains? commands "plan"))
-      (is (contains? commands "task"))
-      (is (contains? commands "search"))
-      (is (contains? commands "new")))))
+      (let [commands (set (map :command (:subcommands main/cli-definition)))]
+        (is (contains? commands "init"))
+        (is (contains? commands "plan"))
+        (is (contains? commands "task"))
+        (is (contains? commands "search"))
+        (is (contains? commands "new")))))
 
-(deftest new-plan-file-test
-  (testing "new-plan-file creates a markdown file with template"
-    (let [temp-file (str "/tmp/test-new-plan-" (System/currentTimeMillis) ".md")]
-      (try
+  (deftest new-plan-file-test
+    (testing "new-plan-file creates a markdown file with template"
+      (let [temp-file (str "/tmp/test-new-plan-" (System/currentTimeMillis) ".md")]
+        (try
         ;; Create the file
-        (main/new-plan-file {:name "my-test-plan" :file temp-file :description "Test plan description"})
+          (main/new-plan-file {:name "my-test-plan" :file temp-file :description "Test plan description"})
         ;; Verify file was created
-        (is (.exists (java.io.File. temp-file)))
+          (is (.exists (java.io.File. temp-file)))
         ;; Verify content
-        (let [content (slurp temp-file)]
-          (is (str/includes? content "# my-test-plan"))
-          (is (str/includes? content "Test plan description"))
-          (is (str/includes? content "## Overview"))
-          (is (str/includes? content "## Goals"))
-          (is (str/includes? content "## Context"))
-          (is (str/includes? content "## Approach"))
-          (is (str/includes? content "## Discussion"))
-          (is (str/includes? content "### Initial Request"))
-          (is (str/includes? content "### Response")))
-        (finally
+          (let [content (slurp temp-file)]
+            (is (str/includes? content "# my-test-plan"))
+            (is (str/includes? content "Test plan description"))
+            (is (str/includes? content "## Overview"))
+            (is (str/includes? content "## Goals"))
+            (is (str/includes? content "## Context"))
+            (is (str/includes? content "## Approach"))
+            (is (str/includes? content "## Discussion"))
+            (is (str/includes? content "### Initial Request"))
+            (is (str/includes? content "### Response")))
+          (finally
           ;; Cleanup
-          (.delete (java.io.File. temp-file))))))
-  (testing "new-plan-file uses defaults when options not provided"
-    (let [temp-file (str "/tmp/test-new-plan-default-" (System/currentTimeMillis) ".md")]
-      (try
+            (.delete (java.io.File. temp-file))))))
+    (testing "new-plan-file uses defaults when options not provided"
+      (let [temp-file (str "/tmp/test-new-plan-default-" (System/currentTimeMillis) ".md")]
+        (try
         ;; Create the file with minimal args
-        (main/new-plan-file {:file temp-file})
+          (main/new-plan-file {:file temp-file})
         ;; Verify file was created with default name
-        (is (.exists (java.io.File. temp-file)))
-        (let [content (slurp temp-file)]
-          (is (str/includes? content "# new-plan"))
-          (is (str/includes? content "A plan for LLM collaboration")))
-        (finally
+          (is (.exists (java.io.File. temp-file)))
+          (let [content (slurp temp-file)]
+            (is (str/includes? content "# new-plan"))
+            (is (str/includes? content "A plan for LLM collaboration")))
+          (finally
           ;; Cleanup
-          (.delete (java.io.File. temp-file)))))))
-)
+            (.delete (java.io.File. temp-file))))))))

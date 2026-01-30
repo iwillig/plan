@@ -19,6 +19,10 @@
                      :description "Test"
                      :content "Content"
                      :completed false
+                     :status "pending"
+                     :priority 100
+                     :acceptance_criteria nil
+                     :status_changed_at nil
                      :created_at "2024-01-01"
                      :updated_at "2024-01-01"})))
   (testing "Task schema allows parent_id"
@@ -30,6 +34,10 @@
                      :description nil
                      :content nil
                      :completed true
+                     :status "completed"
+                     :priority 50
+                     :acceptance_criteria "All tests pass"
+                     :status_changed_at "2024-01-01"
                      :created_at nil
                      :updated_at nil}))))
 

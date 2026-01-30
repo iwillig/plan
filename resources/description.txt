@@ -1,0 +1,47 @@
+A persistent planning tool designed for LLM agents.
+
+Manage complex work through plans with tasks, dependencies, and learned lessons.
+Track reasoning traces, capture constraints as facts, and maintain state across
+sessions. Export/import via markdown for human review and collaboration.
+
+CORE WORKFLOW FOR AGENTS:
+
+1. Get next task:     plan task next --plan-id 1
+2. Start working:     plan task start --id N
+3. Record reasoning:  plan trace add --task-id N --type thought -c "..."
+4. Complete or fail:  plan task complete --id N  OR  plan task fail --id N
+5. Capture lessons:   Store what worked/failed for future reference
+
+TASK STATUS LIFECYCLE:
+  pending -> in_progress -> completed | failed | blocked | skipped
+
+DEPENDENCY MANAGEMENT:
+  plan task depends --id 2 --on 1    Task 2 waits for task 1
+  plan task ready --plan-id 1        List unblocked pending tasks
+  plan task next --plan-id 1         Highest priority ready task
+
+REASONING TRACES (ReAct pattern):
+  plan trace add --task-id N --type thought -c "Analyzing the problem..."
+  plan trace add --task-id N --type action -c "Running tests"
+  plan trace add --task-id N --type observation -c "3 tests failed"
+  plan trace add --task-id N --type reflection -c "Need to fix edge cases"
+
+FACTS (Persistent knowledge):
+  Store discovered constraints and context that inform future decisions.
+  Facts can link to tasks: informs, discovered_during, blocks, required_context
+
+LESSONS (Learning from experience):
+  Capture patterns: success_pattern, failure_pattern, constraint, technique
+  Confidence scores help prioritize which lessons to apply.
+
+QUICK REFERENCE:
+  plan init                      Initialize database
+  plan new -n "feature"          Create plan template
+  plan import -f plan.md         Import from markdown (v3 format)
+  plan export --id 1             Export with dependencies
+  plan task show --id N          View task with blockers/blocks
+  plan search -q "keyword"       Search plans, tasks, facts
+
+MARKDOWN FORMAT (v3):
+  Tasks support: status, priority, acceptance_criteria, blocked_by, blocks
+  Round-trips preserve dependencies and all task metadata.
