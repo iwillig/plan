@@ -2,12 +2,14 @@
   (:gen-class)
   (:require
    [cli-matic.core :as cli]
+   [clojure-mcp.core :as mcp-core]
    [clojure.java.io :as io]
    [clojure.pprint :as pprint]
    [plan.config :as config]
    [plan.db :as db]
    [plan.import :as import]
    [plan.markdown :as markdown]
+   [plan.mcp-server :as mcp]
    [plan.models.fact :as fact]
    [plan.models.lesson :as lesson]
    [plan.models.plan :as plan]
@@ -680,6 +682,28 @@
   (pprint/pprint {:config-file config/config-file
                   :config (config/load-config)}))
 
+(defn mcp-server-info
+  "Display information about the MCP server capabilities.
+   This demonstrates clojure-mcp library is properly loaded."
+  [_]
+  ;; Access the nrepl-client-atom from clojure-mcp.core to verify library is loaded
+  (pprint/pprint {:status "clojure-mcp library loaded"
+                  :version "0.1.11"
+                  :capabilities [:tools :prompts :resources]
+                  :nrepl-atom-exists? (some? mcp-core/nrepl-client-atom)
+                  :note "MCP server functionality can be added using clojure-mcp.core/build-and-start-mcp-server"}))
+
+(defn mcp-server-start
+  "Start the MCP server for the planning tool.
+   This provides a Model Context Protocol interface for LLM agents
+   to interact with plans, tasks, and facts."
+  [{:keys [port]}]
+  (pprint/pprint {:status "Starting MCP server"
+                  :port port
+                  :note "Use Ctrl+C to stop"})
+  ;; Start the MCP server - this blocks until interrupted
+  (mcp/start-mcp-server {:port port}))
+
 (defn new-plan-file
   "Create a new plan file for LLM collaboration.
    Generates a markdown file with a template structure."
@@ -1137,7 +1161,17 @@
      :opts [{:as "Plan name" :option "name" :short "n" :type :string}
             {:as "Output file" :option "file" :short "f" :type :string}
             {:as "Description" :option "description" :short "d" :type :string}]
-     :runs new-plan-file}]})
+     :runs new-plan-file}
+    {:command "mcp"
+     :description "MCP server operations"
+     :subcommands
+     [{:command "info"
+       :description "Display MCP server capabilities and status"
+       :runs mcp-server-info}
+      {:command "start"
+       :description "Start the MCP server (blocks until interrupted)"
+       :opts [{:as "nREPL port (optional)" :option "port" :short "p" :type :int}]
+       :runs mcp-server-start}]}]})
 
 (defn -main [& args]
   (cli/run-cmd args cli-definition))
