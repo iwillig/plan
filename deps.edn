@@ -4,10 +4,8 @@
 
   ;; MCP (Model Context Protocol) server support
   ;; Using git dependency as recommended by the library
-  io.github.bhauman/clojure-mcp {:git/url "https://github.com/bhauman/clojure-mcp" :git/sha "bbefc7a7fe1f85dae4bd8abf26c7e20a269f824a"}
-  org.slf4j/slf4j-nop {:mvn/version "2.0.16"}
-
-
+  io.github.bhauman/clojure-mcp {:git/url "https://github.com/bhauman/clojure-mcp"
+                                 :git/sha "bbefc7a7fe1f85dae4bd8abf26c7e20a269f824a"}
 
   funcool/cuerdas {:mvn/version "2022.03.27-397"}
   cli-matic/cli-matic {:mvn/version "0.5.4"}
