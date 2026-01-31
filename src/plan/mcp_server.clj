@@ -2,14 +2,17 @@
   "MCP server implementation for the planning tool.
    Uses a capabilities-based RPC design with two tools:
    - get_capabilities: self-documenting API reference
-   - execute: RPC dispatcher for all operations"
+   - execute: RPC dispatcher for all operations
+   
+   Operations are delegated to plan.operations.* namespaces which use
+   failjure for monadic error handling."
   (:require
    [clojure-mcp.core :as mcp-core]
    [clojure.data.json :as json]
-   [clojure.string :as str]
+   [failjure.core :as f]
    [plan.config :as config]
    [plan.db :as db]
-   [plan.models.fact :as fact]))
+   [plan.operations.fact :as fact-ops]))
 
 (set! *warn-on-reflection* true)
 
@@ -24,7 +27,7 @@
    :description "Plan Management System - Fact Operations API"
    :note "All operations require a valid database. Use init command if needed."
    :operations
-   {:fact/list
+   {:fact-list
     {:description "List all facts for a specific plan"
      :parameters
      {:plan_id {:type "integer"
@@ -42,7 +45,7 @@
                            :created_at {:type "string"}
                            :updated_at {:type "string"}}}}}
 
-    :fact/get
+    :fact-get
     {:description "Get a single fact by its ID"
      :parameters
      {:fact_id {:type "integer"
@@ -60,7 +63,7 @@
                    :created_at {:type "string"}
                    :updated_at {:type "string"}}}}
 
-    :fact/create
+    :fact-create
     {:description "Create a new fact in a plan"
      :parameters
      {:plan_id {:type "integer"
@@ -90,7 +93,7 @@
                    :created_at {:type "string"}
                    :updated_at {:type "string"}}}}
 
-    :fact/update
+    :fact-update
     {:description "Update an existing fact"
      :parameters
      {:fact_id {:type "integer"
@@ -111,7 +114,7 @@
      {:type "object"
       :description "Updated fact object or null if not found"}}
 
-    :fact/delete
+    :fact-delete
     {:description "Delete a fact by ID"
      :parameters
      {:fact_id {:type "integer"
@@ -122,104 +125,146 @@
      {:type "object"
       :description "Success status"
       :properties {:success {:type "boolean"}
-                   :message {:type "string"}}}}}
+                   :message {:type "string"}}}}
+
+    :fact-search
+    {:description "Search facts using full-text search"
+     :parameters
+     {:query {:type "string"
+              :description "Search query"
+              :required true
+              :example "database"}}
+     :returns
+     {:type "array"
+      :description "Array of matching fact objects"}}}
 
    :examples
    [{:description "List all facts for plan 1"
-     :request {:operation "fact/list" :plan_id 1}}
+     :request {:operation "fact-list" :plan_id 1}}
     {:description "Create a new fact"
-     :request {:operation "fact/create"
+     :request {:operation "fact-create"
                :plan_id 1
                :name "Database URL"
                :content "postgres://localhost/mydb"}}
     {:description "Get a specific fact"
-     :request {:operation "fact/get" :fact_id 5}}
+     :request {:operation "fact-get" :fact_id 5}}
     {:description "Update fact content"
-     :request {:operation "fact/update"
+     :request {:operation "fact-update"
                :fact_id 5
                :content "Updated information here"}}
     {:description "Delete a fact"
-     :request {:operation "fact/delete" :fact_id 5}}]})
+     :request {:operation "fact-delete" :fact_id 5}}
+    {:description "Search facts"
+     :request {:operation "fact-search" :query "database"}}]})
+
+;; -----------------------------------------------------------------------------
+;; Result Formatting
+;; -----------------------------------------------------------------------------
+
+(defn- format-success
+  "Format a successful operation result."
+  [operation data]
+  {:status :success
+   :operation operation
+   :data data})
+
+(defn- format-success-with-count
+  "Format a successful list operation result."
+  [operation data]
+  {:status :success
+   :operation operation
+   :count (count data)
+   :data data})
+
+(defn- format-error
+  "Format a failure result from failjure."
+  [operation failure]
+  {:status :error
+   :operation operation
+   :message (f/message failure)})
 
 ;; -----------------------------------------------------------------------------
 ;; Operation Handlers
 ;; -----------------------------------------------------------------------------
 
-(defn- validate-params
-  "Validate that required parameters are present"
-  [params required-keys]
-  (let [missing (remove #(contains? params %) required-keys)]
-    (when (seq missing)
-      (throw (ex-info (str "Missing required parameters: "
-                           (str/join ", " (map name missing)))
-                      {:type :validation-error
-                       :missing missing})))))
-
 (defn- handle-fact-list
   "List all facts for a plan"
   [conn params]
-  (validate-params params [:plan_id])
-  (let [plan-id (:plan_id params)
-        facts (fact/get-by-plan conn plan-id)]
-    {:status :success
-     :operation :fact/list
-     :count (count facts)
-     :data facts}))
+  (let [plan-id (:plan_id params)]
+    (if (nil? plan-id)
+      {:status :error
+       :operation :fact-list
+       :message "Missing required parameter: plan_id"
+       :error-type :validation-error}
+      (let [result (fact-ops/list-facts conn plan-id)]
+        (if (f/failed? result)
+          (format-error :fact-list result)
+          (format-success-with-count :fact-list result))))))
 
 (defn- handle-fact-get
   "Get a single fact by ID"
   [conn params]
-  (validate-params params [:fact_id])
-  (let [fact-id (:fact_id params)
-        fact (fact/get-by-id conn fact-id)]
-    (if fact
-      {:status :success
-       :operation :fact/get
-       :data fact}
+  (let [fact-id (:fact_id params)]
+    (if (nil? fact-id)
       {:status :error
-       :operation :fact/get
-       :message (str "Fact not found: " fact-id)})))
+       :operation :fact-get
+       :message "Missing required parameter: fact_id"
+       :error-type :validation-error}
+      (let [result (fact-ops/get-fact conn fact-id)]
+        (if (f/failed? result)
+          (format-error :fact-get result)
+          (format-success :fact-get result))))))
 
 (defn- handle-fact-create
   "Create a new fact"
   [conn params]
-  (validate-params params [:plan_id :name :content])
-  (let [result (fact/create conn
-                            (:plan_id params)
-                            (:name params)
-                            (:description params)
-                            (:content params))]
-    {:status :success
-     :operation :fact/create
-     :data result}))
+  (let [result (fact-ops/create-fact conn params)]
+    (if (f/failed? result)
+      (format-error :fact-create result)
+      (format-success :fact-create result))))
 
 (defn- handle-fact-update
   "Update an existing fact"
   [conn params]
-  (validate-params params [:fact_id])
-  (let [fact-id (:fact_id params)
-        updates (select-keys params [:name :description :content])
-        _ (when (empty? updates)
-            (throw (ex-info "No fields to update provided"
-                            {:type :validation-error})))
-        result (fact/update conn fact-id updates)]
-    (if result
-      {:status :success
-       :operation :fact/update
-       :data result}
+  (let [fact-id (:fact_id params)]
+    (if (nil? fact-id)
       {:status :error
-       :operation :fact/update
-       :message (str "Fact not found: " fact-id)})))
+       :operation :fact-update
+       :message "Missing required parameter: fact_id"
+       :error-type :validation-error}
+      (let [updates (select-keys params [:name :description :content])
+            result (fact-ops/update-fact conn fact-id updates)]
+        (if (f/failed? result)
+          (format-error :fact-update result)
+          (format-success :fact-update result))))))
 
 (defn- handle-fact-delete
   "Delete a fact"
   [conn params]
-  (validate-params params [:fact_id])
-  (let [fact-id (:fact_id params)
-        _ (fact/delete conn fact-id)]
-    {:status :success
-     :operation :fact/delete
-     :data {:deleted true :fact_id fact-id}}))
+  (let [fact-id (:fact_id params)]
+    (if (nil? fact-id)
+      {:status :error
+       :operation :fact-delete
+       :message "Missing required parameter: fact_id"
+       :error-type :validation-error}
+      (let [result (fact-ops/delete-fact conn fact-id)]
+        (if (f/failed? result)
+          (format-error :fact-delete result)
+          (format-success :fact-delete result))))))
+
+(defn- handle-fact-search
+  "Search facts"
+  [conn params]
+  (let [query (:query params)]
+    (if (nil? query)
+      {:status :error
+       :operation :fact-search
+       :message "Missing required parameter: query"
+       :error-type :validation-error}
+      (let [result (fact-ops/search-facts conn query)]
+        (if (f/failed? result)
+          (format-error :fact-search result)
+          (format-success-with-count :fact-search result))))))
 
 ;; -----------------------------------------------------------------------------
 ;; RPC Router
@@ -228,22 +273,17 @@
 (defn- execute-operation
   "Route to the appropriate operation handler"
   [conn operation params]
-  (try
-    (case operation
-      "fact/list" (handle-fact-list conn params)
-      "fact/get" (handle-fact-get conn params)
-      "fact/create" (handle-fact-create conn params)
-      "fact/update" (handle-fact-update conn params)
-      "fact/delete" (handle-fact-delete conn params)
-      (throw (ex-info (str "Unknown operation: " operation)
-                      {:type :unknown-operation
-                       :operation operation})))
-    (catch Exception e
-      (let [data (ex-data e)]
-        {:status :error
-         :operation operation
-         :message (ex-message e)
-         :error-type (:type data)}))))
+  (case operation
+    "fact-list" (handle-fact-list conn params)
+    "fact-get" (handle-fact-get conn params)
+    "fact-create" (handle-fact-create conn params)
+    "fact-update" (handle-fact-update conn params)
+    "fact-delete" (handle-fact-delete conn params)
+    "fact-search" (handle-fact-search conn params)
+    {:status :error
+     :operation operation
+     :message (str "Unknown operation: " operation)
+     :error-type :unknown-operation}))
 
 ;; -----------------------------------------------------------------------------
 ;; MCP Tool Functions
@@ -257,7 +297,7 @@
 (defn execute-tool
   "Execute an RPC operation
    Expected args format:
-   {:request '{\"operation\": \"fact/list\", \"plan_id\": 1}'}
+   {:request '{\"operation\": \"fact-list\", \"plan_id\": 1}'}
    
    The request is a JSON string containing the operation and parameters."
   [args callback]
@@ -300,7 +340,7 @@
     :description (str "Execute an operation on the planning system. "
                       "Requires a JSON request string with 'operation' and parameters. "
                       "Use get_capabilities first to discover available operations. "
-                      "Request format: '{\"operation\": \"fact/list\", \"plan_id\": 1}'")
+                      "Request format: '{\"operation\": \"fact-list\", \"plan_id\": 1}'")
     :schema {:type "object"
              :properties
              {:request {:type "string"

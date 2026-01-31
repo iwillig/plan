@@ -1,0 +1,4 @@
+{:lint-as {hugsql.core/def-db-fns clojure.core/declare
+           hugsql.core/def-db-fns-from-string clojure.core/declare
+           hugsql.core/def-sqlvec-fns clojure.core/declare
+           hugsql.core/def-sqlvec-fns-from-string clojure.core/declare}}

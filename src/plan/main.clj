@@ -5,16 +5,20 @@
    [clojure-mcp.core :as mcp-core]
    [clojure.java.io :as io]
    [clojure.pprint :as pprint]
+   [failjure.core :as f]
    [plan.config :as config]
    [plan.db :as db]
    [plan.import :as import]
    [plan.markdown :as markdown]
    [plan.mcp-server :as mcp]
    [plan.models.fact :as fact]
-   [plan.models.lesson :as lesson]
    [plan.models.plan :as plan]
    [plan.models.task :as task]
-   [plan.models.trace :as trace]
+   [plan.operations.fact :as fact-ops]
+   [plan.operations.lesson :as lesson-ops]
+   [plan.operations.plan :as plan-ops]
+   [plan.operations.task :as task-ops]
+   [plan.operations.trace :as trace-ops]
    [plan.serializers.markdown-v2 :as md-v2]))
 
 (set! *warn-on-reflection* true)
@@ -364,7 +368,32 @@
   (db/execute! conn lessons-fts-au-trigger)
   nil)
 
-;; Command handlers
+;; -----------------------------------------------------------------------------
+;; CLI Helpers
+;; -----------------------------------------------------------------------------
+
+(defn- print-error-and-exit
+  "Print error message and exit with code 1"
+  [failure]
+  (pprint/pprint {:status :error
+                  :message (f/message failure)})
+  (System/exit 1))
+
+(defn- handle-result
+  "Handle a failjure result - print success or error and exit."
+  [result]
+  (if (f/failed? result)
+    (print-error-and-exit result)
+    (pprint/pprint result)))
+
+(defn- with-db
+  "Execute a function with database connection, handling failjure results."
+  [f]
+  (db/with-connection (config/db-path) f))
+
+;; -----------------------------------------------------------------------------
+;; Command Handlers
+;; -----------------------------------------------------------------------------
 
 (defn init-db
   "Initialize the database with schema"
@@ -378,199 +407,167 @@
 (defn plan-list
   "List all plans"
   [_]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (pprint/pprint (plan/get-all conn))))))
+  (with-db
+    (fn [conn]
+      (pprint/pprint (plan-ops/list-plans conn)))))
 
 (defn plan-create
   "Create a new plan"
   [{:keys [name description content]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (pprint/pprint (plan/create conn name description content))))))
+  (with-db
+    (fn [conn]
+      (let [result (plan-ops/create-plan conn {:name name
+                                               :description description
+                                               :content content})]
+        (handle-result result)))))
 
 (defn plan-show
   "Show a specific plan"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (pprint/pprint {:plan (plan/get-by-id conn id)
-                        :tasks (task/get-by-plan conn id)
-                        :facts (fact/get-by-plan conn id)})))))
+  (with-db
+    (fn [conn]
+      (let [result (plan-ops/show-plan conn id)]
+        (handle-result result)))))
 
 (defn plan-update
   "Update a plan"
   [{:keys [id completed] :as args}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [updates (select-keys args [:name :description :content])
-              updates (if completed
-                        (assoc updates :completed (= "true" completed))
-                        updates)
-              result (plan/update conn id updates)]
-          (pprint/pprint result))))))
-
-(defn task-list
-  "List tasks for a plan"
-  [{:keys [plan-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [tasks (task/get-by-plan conn plan-id)]
-          (pprint/pprint tasks))))))
-
-(defn task-create
-  "Create a new task"
-  [{:keys [plan-id name description content parent-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [result (task/create conn plan-id name description content parent-id)]
-          (pprint/pprint result))))))
-
-(defn task-update
-  "Update a task"
-  [{:keys [id completed] :as args}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [updates (select-keys args [:name :description :content :plan-id :parent-id])
-              updates (if completed
-                        (assoc updates :completed (= "true" completed))
-                        updates)
-              result (task/update conn id updates)]
-          (pprint/pprint result))))))
-
-(defn search
-  "Search across plans, tasks, and facts"
-  [{:keys [query]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [plans (db/search-plans conn query)
-              tasks (db/search-tasks conn query)
-              facts (db/search-facts conn query)]
-          (pprint/pprint {:plans plans :tasks tasks :facts facts}))))))
+  (with-db
+    (fn [conn]
+      (let [updates (cond-> (select-keys args [:name :description :content])
+                      completed (assoc :completed (= "true" completed)))
+            result (plan-ops/update-plan conn id updates)]
+        (handle-result result)))))
 
 (defn plan-delete
   "Delete a plan and all its tasks"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [task-count (task/delete-by-plan conn id)]
-          (fact/delete-by-plan conn id)
-          (plan/delete conn id)
-          (pprint/pprint {:deleted {:plan id :tasks task-count}}))))))
+  (with-db
+    (fn [conn]
+      (let [result (plan-ops/delete-plan conn id)]
+        (handle-result result)))))
+
+(defn task-list
+  "List tasks for a plan"
+  [{:keys [plan-id]}]
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/list-tasks conn plan-id)]
+        (handle-result result)))))
+
+(defn task-create
+  "Create a new task"
+  [{:keys [plan-id name description content parent-id]}]
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/create-task conn {:plan_id plan-id
+                                               :name name
+                                               :description description
+                                               :content content
+                                               :parent_id parent-id})]
+        (handle-result result)))))
+
+(defn task-update
+  "Update a task"
+  [{:keys [id completed] :as args}]
+  (with-db
+    (fn [conn]
+      (let [updates (cond-> (select-keys args [:name :description :content :plan-id :parent-id])
+                      completed (assoc :completed (= "true" completed)))
+            result (task-ops/update-task conn id updates)]
+        (handle-result result)))))
 
 (defn task-delete
   "Delete a task"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (task/delete conn id)
-        (pprint/pprint {:deleted {:task id}})))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/delete-task conn id)]
+        (handle-result result)))))
 
 (defn task-start
   "Start a task (transition from pending to in_progress)"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [result (task/start-task conn id)]
-          (pprint/pprint {:status :success :task result})
-          (pprint/pprint {:status :error :message "Failed to start task"}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/start-task conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success :task result}))))))
 
 (defn task-complete
   "Complete a task"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [result (task/complete-task conn id)]
-          (pprint/pprint {:status :success :task result})
-          (pprint/pprint {:status :error :message "Failed to complete task"}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/complete-task conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success :task result}))))))
 
 (defn task-fail
   "Mark a task as failed"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [result (task/fail-task conn id)]
-          (pprint/pprint {:status :success :task result})
-          (pprint/pprint {:status :error :message "Failed to mark task as failed"}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/fail-task conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success :task result}))))))
 
 (defn task-depends
   "Add a dependency: task with --id depends on task with --on"
   [{:keys [id on]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if (task/has-cycle? conn on id)
-          (pprint/pprint {:status :error :message "Adding this dependency would create a cycle"})
-          (if (task/add-dependency conn on id)
-            (pprint/pprint {:status :success
-                            :message (str "Task " id " now depends on task " on)
-                            :blocking-task on
-                            :blocked-task id})
-            (pprint/pprint {:status :error :message "Failed to add dependency"})))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/add-dependency conn on id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success
+                          :message (str "Task " id " now depends on task " on)
+                          :blocking-task on
+                          :blocked-task id}))))))
 
 (defn task-ready
   "List tasks that are ready to work on (pending with no blockers)"
   [{:keys [plan-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [ready-tasks (task/get-ready-tasks conn plan-id)]
-          (pprint/pprint {:ready-tasks ready-tasks
-                          :count (count ready-tasks)}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/get-ready-tasks conn plan-id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:ready-tasks result
+                          :count (count result)}))))))
 
 (defn task-next
   "Get the next task to work on (highest priority ready task)"
   [{:keys [plan-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [next-task (task/get-next-task conn plan-id)]
-          (pprint/pprint {:next-task next-task})
-          (pprint/pprint {:message "No tasks ready"}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/get-next-task conn plan-id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (if result
+            (pprint/pprint {:next-task result})
+            (pprint/pprint {:message "No tasks ready"})))))))
 
 (defn task-show
   "Show a task with its dependencies"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [task-data (task/get-by-id conn id)]
-          (let [blocking (task/get-blocking-tasks conn id)
-                blocked (task/get-blocked-tasks conn id)]
-            (pprint/pprint {:task task-data
-                            :blocked-by (mapv #(select-keys % [:id :name :status]) blocking)
-                            :blocks (mapv #(select-keys % [:id :name :status]) blocked)}))
-          (pprint/pprint {:status :error :message (str "Task " id " not found")}))))))
+  (with-db
+    (fn [conn]
+      (let [result (task-ops/show-task conn id)]
+        (handle-result result)))))
+
+(defn search
+  "Search across plans, tasks, and facts"
+  [{:keys [query]}]
+  (with-db
+    (fn [conn]
+      (let [plans (db/search-plans conn query)
+            tasks (db/search-tasks conn query)
+            facts (db/search-facts conn query)]
+        (pprint/pprint {:plans plans :tasks tasks :facts facts})))))
 
 (defn markdown-cmd
   "Parse a markdown file and display its contents.
@@ -752,43 +749,32 @@
   "Add a trace entry for task reasoning
    Types: thought, action, observation, reflection"
   [{:keys [task-id type content]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [task (task/get-by-id conn task-id)]
-          (if-not task
-            (do (pprint/pprint {:status :error
-                                :message (str "Task " task-id " not found")})
-                (System/exit 1))
-            (let [plan-id (:plan_id task)
-                  seq-num (trace/get-next-sequence conn plan-id)
-                  result (trace/create conn {:plan-id plan-id
-                                             :task-id task-id
-                                             :trace-type type
-                                             :sequence-num seq-num
-                                             :content content})]
-              (pprint/pprint {:status :success
-                              :trace-id (:id result)
-                              :task-id task-id
-                              :type type
-                              :sequence seq-num}))))))))
+  (with-db
+    (fn [conn]
+      (let [result (trace-ops/add-trace conn {:task-id task-id
+                                              :trace-type type
+                                              :content content})]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success
+                          :trace-id (:id result)
+                          :task-id task-id
+                          :type type
+                          :sequence (:sequence_num result)}))))))
 
 (defn trace-history
   "Show trace history for a task"
   [{:keys [task-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [task (task/get-by-id conn task-id)
-              traces (trace/get-by-task conn task-id)]
-          (if-not task
-            (do (pprint/pprint {:status :error
-                                :message (str "Task " task-id " not found")})
-                (System/exit 1))
-            (pprint/pprint {:task (select-keys task [:id :name :status])
-                            :traces (mapv #(select-keys % [:id :trace_type :sequence_num :content :created_at]) traces)})))))))
+  (with-db
+    (fn [conn]
+      (let [task-result (task-ops/get-task conn task-id)]
+        (if (f/failed? task-result)
+          (print-error-and-exit task-result)
+          (let [traces (trace-ops/get-task-traces conn task-id)]
+            (if (f/failed? traces)
+              (print-error-and-exit traces)
+              (pprint/pprint {:task (select-keys task-result [:id :name :status])
+                              :traces (mapv #(select-keys % [:id :trace_type :sequence_num :content :created_at]) traces)}))))))))
 
 ;; Lesson commands (Reflexion pattern)
 
@@ -796,15 +782,15 @@
   "Add a lesson from experience
    Types: success_pattern, failure_pattern, constraint, technique"
   [{:keys [plan-id task-id type trigger content]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [result (lesson/create conn {:plan-id plan-id
-                                          :task-id task-id
-                                          :lesson-type type
-                                          :trigger-condition trigger
-                                          :lesson-content content})]
+  (with-db
+    (fn [conn]
+      (let [result (lesson-ops/create-lesson conn {:plan-id plan-id
+                                                   :task-id task-id
+                                                   :lesson-type type
+                                                   :trigger-condition trigger
+                                                   :lesson-content content})]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:status :success
                           :lesson-id (:id result)
                           :type type
@@ -814,92 +800,86 @@
 (defn lesson-list
   "List lessons with optional filters"
   [{:keys [plan-id min-confidence max-confidence type]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [min-conf (when min-confidence (Float/parseFloat min-confidence))
-              max-conf (when max-confidence (Float/parseFloat max-confidence))
-              ;; Get all lessons or filter by plan
-              lessons (if plan-id
-                        (lesson/get-by-plan conn plan-id)
-                        (lesson/get-all conn))
-              ;; Apply filters in Clojure
-              filtered (cond->> lessons
-                         min-conf (filter #(>= (:confidence %) min-conf))
-                         max-conf (filter #(<= (:confidence %) max-conf))
-                         type (filter #(= (:lesson_type %) type)))]
+  (with-db
+    (fn [conn]
+      (let [min-conf (when min-confidence (Float/parseFloat min-confidence))
+            max-conf (when max-confidence (Float/parseFloat max-confidence))
+            filters {:min-confidence min-conf
+                     :max-confidence max-conf
+                     :lesson-type type}
+            result (if plan-id
+                     (lesson-ops/list-plan-lessons conn plan-id filters)
+                     (lesson-ops/list-all-lessons conn filters))]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:lessons (mapv #(select-keys % [:id :lesson_type :trigger_condition
                                                           :lesson_content :confidence
                                                           :times_validated :created_at])
-                                         filtered)
-                          :count (count filtered)}))))))
+                                         result)
+                          :count (count result)}))))))
 
 (defn lesson-search
   "Search lessons by content"
   [{:keys [query]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [results (lesson/search conn query)]
+  (with-db
+    (fn [conn]
+      (let [result (lesson-ops/search-lessons conn query)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:query query
                           :lessons (mapv #(select-keys % [:id :lesson_type :trigger_condition
                                                           :lesson_content :confidence])
-                                         results)
-                          :count (count results)}))))))
+                                         result)
+                          :count (count result)}))))))
 
 (defn lesson-validate
   "Increase confidence in a lesson"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (lesson/validate conn id)
-        (if-let [lesson (lesson/get-by-id conn id)]
+  (with-db
+    (fn [conn]
+      (let [result (lesson-ops/validate-lesson conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:status :validated
                           :lesson-id id
-                          :confidence (:confidence lesson)
-                          :times-validated (:times_validated lesson)})
-          (pprint/pprint {:status :error
-                          :message (str "Lesson " id " not found")}))))))
+                          :confidence (:confidence result)
+                          :times-validated (:times_validated result)}))))))
 
 (defn lesson-invalidate
   "Decrease confidence in a lesson"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (lesson/invalidate conn id)
-        (if-let [lesson (lesson/get-by-id conn id)]
+  (with-db
+    (fn [conn]
+      (let [result (lesson-ops/invalidate-lesson conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:status :invalidated
                           :lesson-id id
-                          :confidence (:confidence lesson)})
-          (pprint/pprint {:status :error
-                          :message (str "Lesson " id " not found")}))))))
+                          :confidence (:confidence result)}))))))
 
 (defn lesson-delete
   "Delete a lesson"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (lesson/delete conn id)
-        (pprint/pprint {:deleted {:lesson id}})))))
+  (with-db
+    (fn [conn]
+      (let [result (lesson-ops/delete-lesson conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:deleted {:lesson id}}))))))
 
-;; Fact commands
+;; Fact commands (using operations layer with failjure)
 
 (defn fact-create
   "Create a new fact for a plan"
   [{:keys [plan-id name description content]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [result (fact/create conn plan-id name description content)]
+  (with-db
+    (fn [conn]
+      (let [result (fact-ops/create-fact conn {:plan_id plan-id
+                                               :name name
+                                               :description description
+                                               :content content})]
+        (if (f/failed? result)
+          (print-error-and-exit result)
           (pprint/pprint {:status :success
                           :fact-id (:id result)
                           :plan-id plan-id
@@ -908,53 +888,47 @@
 (defn fact-list
   "List facts for a plan"
   [{:keys [plan-id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [facts (fact/get-by-plan conn plan-id)]
-          (pprint/pprint {:facts (mapv #(select-keys % [:id :name :description]) facts)
-                          :count (count facts)}))))))
+  (with-db
+    (fn [conn]
+      (let [result (fact-ops/list-facts conn plan-id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:facts (mapv #(select-keys % [:id :name :description]) result)
+                          :count (count result)}))))))
 
 (defn fact-show
   "Show a fact with full content"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (if-let [fact-data (fact/get-by-id conn id)]
-          (pprint/pprint fact-data)
-          (pprint/pprint {:status :error
-                          :message (str "Fact " id " not found")}))))))
+  (with-db
+    (fn [conn]
+      (let [result (fact-ops/get-fact conn id)]
+        (handle-result result)))))
 
 (defn fact-update
   "Update a fact"
   [{:keys [id name description content]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (let [result (fact/update conn id {:name name
-                                           :description description
-                                           :content content})]
-          (if result
-            (pprint/pprint {:status :success
-                            :fact-id id
-                            :updated (keys (select-keys {:name name :description description :content content}
-                                                        [:name :description :content]))})
-            (pprint/pprint {:status :error
-                            :message (str "Fact " id " not found")})))))))
+  (with-db
+    (fn [conn]
+      (let [updates (cond-> {}
+                      name (assoc :name name)
+                      description (assoc :description description)
+                      content (assoc :content content))
+            result (fact-ops/update-fact conn id updates)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:status :success
+                          :fact-id id
+                          :updated (keys updates)}))))))
 
 (defn fact-delete
   "Delete a fact"
   [{:keys [id]}]
-  (let [db-path (config/db-path)]
-    (db/with-connection
-      db-path
-      (fn [conn]
-        (fact/delete conn id)
-        (pprint/pprint {:deleted {:fact id}})))))
+  (with-db
+    (fn [conn]
+      (let [result (fact-ops/delete-fact conn id)]
+        (if (f/failed? result)
+          (print-error-and-exit result)
+          (pprint/pprint {:deleted {:fact id}}))))))
 
 ;; CLI definition
 

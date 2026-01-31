@@ -137,6 +137,119 @@
       (is (= 2 (fact/delete-by-plan helper/*conn* plan-id)))
       (is (empty? (fact/get-by-plan helper/*conn* plan-id))))))
 
+(deftest get-by-name-test
+  (testing "get-by-name returns fact when found"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-get-by-name" "Test" nil)
+          created (fact/create helper/*conn* (:id p) "unique-fact" "Description" "Content")
+          fetched (fact/get-by-name helper/*conn* (:id p) "unique-fact")]
+      (is (some? fetched))
+      (is (= (:id created) (:id fetched)))
+      (is (= "unique-fact" (:name fetched)))
+      (is (= "Description" (:description fetched)))))
+
+  (testing "get-by-name returns nil when not found"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-get-by-name-2" "Test" nil)]
+      (is (nil? (fact/get-by-name helper/*conn* (:id p) "non-existent")))))
+
+  (testing "get-by-name is scoped to plan"
+    (main/create-schema! helper/*conn*)
+    (let [p1 (plan/create helper/*conn* "plan-1" "Test 1" nil)
+          p2 (plan/create helper/*conn* "plan-2" "Test 2" nil)]
+      (fact/create helper/*conn* (:id p1) "same-name" "In plan 1" "Content 1")
+      (fact/create helper/*conn* (:id p2) "same-name" "In plan 2" "Content 2")
+      (let [f1 (fact/get-by-name helper/*conn* (:id p1) "same-name")
+            f2 (fact/get-by-name helper/*conn* (:id p2) "same-name")]
+        (is (= "In plan 1" (:description f1)))
+        (is (= "In plan 2" (:description f2)))))))
+
+(deftest upsert-test
+  (testing "upsert creates new fact when not exists"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-upsert-1" "Test" nil)
+          result (fact/upsert helper/*conn* (:id p)
+                              {:name "new-fact"
+                               :description "Description"
+                               :content "Content"})]
+      (is (some? result))
+      (is (= "new-fact" (:name result)))
+      (is (= "Description" (:description result)))
+      (is (= "Content" (:content result)))))
+
+  (testing "upsert updates existing fact when exists"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-upsert-2" "Test" nil)
+          _ (fact/create helper/*conn* (:id p) "existing" "Original desc" "Original content")
+          result (fact/upsert helper/*conn* (:id p)
+                              {:name "existing"
+                               :description "Updated desc"
+                               :content "Updated content"})]
+      (is (= "existing" (:name result)))
+      (is (= "Updated desc" (:description result)))
+      (is (= "Updated content" (:content result)))
+      ;; Verify only one fact exists with this name
+      (is (= 1 (count (fact/get-by-plan helper/*conn* (:id p)))))))
+
+  (testing "upsert preserves fact id on update"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-upsert-3" "Test" nil)
+          original (fact/create helper/*conn* (:id p) "preserve-id" "Original" "Original")
+          updated (fact/upsert helper/*conn* (:id p)
+                               {:name "preserve-id"
+                                :description "Updated"
+                                :content "Updated"})]
+      (is (= (:id original) (:id updated))))))
+
+(deftest delete-orphans-test
+  (testing "delete-orphans removes facts not in keep-names"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-orphans-1" "Test" nil)
+          plan-id (:id p)]
+      (fact/create helper/*conn* plan-id "keep-1" "Keep 1" "Content")
+      (fact/create helper/*conn* plan-id "keep-2" "Keep 2" "Content")
+      (fact/create helper/*conn* plan-id "orphan-1" "Orphan 1" "Content")
+      (fact/create helper/*conn* plan-id "orphan-2" "Orphan 2" "Content")
+      (let [deleted-count (fact/delete-orphans helper/*conn* plan-id ["keep-1" "keep-2"])
+            remaining (fact/get-by-plan helper/*conn* plan-id)]
+        (is (= 2 deleted-count))
+        (is (= 2 (count remaining)))
+        (is (= #{"keep-1" "keep-2"} (set (map :name remaining)))))))
+
+  (testing "delete-orphans with empty keep-names deletes all"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-orphans-2" "Test" nil)
+          plan-id (:id p)]
+      (fact/create helper/*conn* plan-id "fact-1" "Fact 1" "Content")
+      (fact/create helper/*conn* plan-id "fact-2" "Fact 2" "Content")
+      (let [deleted-count (fact/delete-orphans helper/*conn* plan-id [])]
+        (is (= 2 deleted-count))
+        (is (empty? (fact/get-by-plan helper/*conn* plan-id))))))
+
+  (testing "delete-orphans with nil keep-names deletes all"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-orphans-3" "Test" nil)
+          plan-id (:id p)]
+      (fact/create helper/*conn* plan-id "fact-1" "Fact 1" "Content")
+      (let [deleted-count (fact/delete-orphans helper/*conn* plan-id nil)]
+        (is (= 1 deleted-count))
+        (is (empty? (fact/get-by-plan helper/*conn* plan-id))))))
+
+  (testing "delete-orphans returns 0 when no orphans"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-orphans-4" "Test" nil)
+          plan-id (:id p)]
+      (fact/create helper/*conn* plan-id "fact-1" "Fact 1" "Content")
+      (fact/create helper/*conn* plan-id "fact-2" "Fact 2" "Content")
+      (let [deleted-count (fact/delete-orphans helper/*conn* plan-id ["fact-1" "fact-2"])]
+        (is (= 0 deleted-count))
+        (is (= 2 (count (fact/get-by-plan helper/*conn* plan-id)))))))
+
+  (testing "delete-orphans with no facts returns 0"
+    (main/create-schema! helper/*conn*)
+    (let [p (plan/create helper/*conn* "test-orphans-5" "Test" nil)]
+      (is (= 0 (fact/delete-orphans helper/*conn* (:id p) ["any-name"]))))))
+
 (deftest search-test
   (testing "search finds matching facts"
     (main/create-schema! helper/*conn*)
@@ -144,6 +257,20 @@
       (fact/create helper/*conn* (:id plan) "key-fact" "Key fact" "Content")
       (let [results (fact/search helper/*conn* "fact")]
         (is (= 1 (count results)))
-        (is (= "key-fact" (:name (first results))))))))
+        (is (= "key-fact" (:name (first results)))))))
+
+  (testing "search returns empty for no matches"
+    (main/create-schema! helper/*conn*)
+    (let [plan (plan/create helper/*conn* "test-search-2" "Test" nil)]
+      (fact/create helper/*conn* (:id plan) "fact" "Description" "Content")
+      (is (empty? (fact/search helper/*conn* "nonexistent")))))
+
+  (testing "search matches on name, description, and content"
+    (main/create-schema! helper/*conn*)
+    (let [plan (plan/create helper/*conn* "test-search-3" "Test" nil)]
+      (fact/create helper/*conn* (:id plan) "alpha" "beta" "gamma")
+      (is (= 1 (count (fact/search helper/*conn* "alpha"))))
+      (is (= 1 (count (fact/search helper/*conn* "beta"))))
+      (is (= 1 (count (fact/search helper/*conn* "gamma")))))))
 
 

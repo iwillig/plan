@@ -1,7 +1,7 @@
 # LLM Agent Instructions - Plan
 
-**Version:** 1.1
-**Last Updated:** 2025-01-29
+**Version:** 1.2
+**Last Updated:** 2025-01-30
 **Project:** plan
 **Shell:** fish (Friendly Interactive Shell)
 
@@ -338,6 +338,25 @@ The `k/run` function is pre-configured with the correct test configuration and i
 
 ## Code Style Guidelines
 
+Follow the [Clojure Community Style Guide](https://guide.clojure.style) conventions.
+
+### Code Layout
+
+- **Line Length**: Keep lines under 80 characters when feasible
+- **Indentation**: Use 2 spaces for body indentation, never tabs
+- **Closing Parens**: Gather trailing parentheses on a single line
+
+```clojure
+;; Good - 2 space body indent, closing parens together
+(when something
+  (something-else))
+
+;; Bad - separate lines for closing parens
+(when something
+  (something-else)
+)
+```
+
 ### Namespace Declaration
 
 Use sorted, aligned requires with single-space indent:
@@ -353,6 +372,201 @@ Use sorted, aligned requires with single-space indent:
     File)))
 
 (set! *warn-on-reflection* true)
+```
+
+### Naming Conventions
+
+**Functions and vars** use `kebab-case`:
+
+```clojure
+;; Good
+(defn calculate-total-price [items])
+(def max-retry-attempts 3)
+
+;; Bad - don't use camelCase or snake_case
+(defn calculateTotalPrice [items])
+```
+
+**Predicates** end with `?`:
+
+```clojure
+;; Good
+(defn valid-email? [email])
+(defn active? [user])
+
+;; Bad
+(defn is-valid-email [email])
+```
+
+**Conversion functions** use `source->target`:
+
+```clojure
+(defn map->vector [m])
+(defn string->int [s])
+```
+
+**Dynamic vars** use earmuffs:
+
+```clojure
+(def ^:dynamic *connection* nil)
+```
+
+### Threading Macros
+
+**Use `->` (thread-first) for object/map transformations:**
+
+```clojure
+;; Good - data flows through first position
+(-> user
+    (assoc :last-login (Instant/now))
+    (update :login-count inc)
+    (dissoc :temporary-token))
+
+;; Bad - deeply nested
+(dissoc
+  (update
+    (assoc user :last-login (Instant/now))
+    :login-count inc)
+  :temporary-token)
+```
+
+**Use `->>` (thread-last) for collection operations:**
+
+```clojure
+;; Good - data flows through last position
+(->> users
+     (filter active?)
+     (map :email)
+     (remove nil?)
+     (sort))
+
+;; Bad - nested collection operations
+(sort (remove nil? (map :email (filter active? users))))
+```
+
+**Use `some->` to short-circuit on nil:**
+
+```clojure
+(some-> user
+        :address
+        :postal-code
+        (subs 0 5))
+```
+
+**Use `cond->` for conditional transformations:**
+
+```clojure
+(cond-> request
+  authenticated? (assoc :user current-user)
+  admin?         (assoc :permissions :all)
+  (:debug opts)  (assoc :debug true))
+```
+
+### Control Flow
+
+**Use `when` for single-branch with side effects:**
+
+```clojure
+;; Good
+(when (valid-input? data)
+  (log-event "Processing data")
+  (process data))
+
+;; Bad - if without else for side effects
+(if (valid-input? data)
+  (do
+    (log-event "Processing data")
+    (process data)))
+```
+
+**Use `cond` for multiple conditions:**
+
+```clojure
+;; Good
+(cond
+  (< n 0) :negative
+  (= n 0) :zero
+  (> n 0) :positive)
+
+;; Bad - nested ifs
+(if (< n 0)
+  :negative
+  (if (= n 0)
+    :zero
+    :positive))
+```
+
+### Data Structure Idioms
+
+**Prefer plain data structures over custom types:**
+
+```clojure
+;; Good - plain maps
+(def user {:id 123
+           :email "user@example.com"
+           :roles #{:admin :editor}})
+
+;; Use keywords as map keys
+{:name "Alice" :age 30}
+
+;; Bad - string keys
+{"name" "Alice" "age" 30}
+```
+
+**Use destructuring to extract values:**
+
+```clojure
+;; Good - destructuring in function arguments
+(defn format-user [{:keys [first-name last-name email]}]
+  (str last-name ", " first-name " <" email ">"))
+
+;; With defaults
+(defn connect [{:keys [host port timeout]
+                :or {port 8080 timeout 5000}}]
+  (create-connection host port timeout))
+```
+
+**Use `into` for combining collections:**
+
+```clojure
+(into [] (filter even? [1 2 3 4]))  ;=> [2 4]
+(into {} (map (fn [x] [x (* x 2)]) [1 2 3]))  ;=> {1 2, 2 4, 3 6}
+```
+
+### Function Composition
+
+**Use `#()` for simple, single-expression functions:**
+
+```clojure
+;; Good
+(map #(* % 2) numbers)
+(filter #(> % 10) values)
+
+;; Bad - #() for complex expressions
+(map #(if (> % 10) (* % 2) (/ % 2)) numbers)
+```
+
+**Use `fn` for multi-expression or named functions:**
+
+```clojure
+(map (fn [x]
+       (let [doubled (* x 2)]
+         (if (even? doubled)
+           doubled
+           (inc doubled))))
+     numbers)
+```
+
+**Prefer higher-order functions over explicit loops:**
+
+```clojure
+;; Good - declarative
+(->> items
+     (filter valid?)
+     (map transform)
+     (reduce combine))
+
+;; Avoid - explicit loop/recur when not needed
 ```
 
 ### Database Access Pattern
@@ -533,3 +747,9 @@ When modifying schema:
 2. Add migration logic if needed for existing databases
 3. Update tests to verify new schema elements
 4. Document changes in commit messages
+
+## Resources
+
+- [Clojure Community Style Guide](https://guide.clojure.style) - Comprehensive style conventions
+- [Clojure Style Guide (GitHub)](https://github.com/bbatsov/clojure-style-guide) - Original by Bozhidar Batsov
+- [clojure-skills](https://github.com/ivanwilliammd/clojure-skills) - Searchable Clojure skill library

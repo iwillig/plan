@@ -1,0 +1,21 @@
+{:linters
+ {:unresolved-symbol
+  {:exclude
+   [fact-create fact-get-by-id fact-get-by-plan fact-get-by-name
+    fact-update fact-delete fact-delete-by-plan fact-delete-orphans-query
+    fact-get-all fact-search
+    lesson-create lesson-get-by-id lesson-get-all lesson-get-by-plan
+    lesson-get-by-task lesson-search lesson-validate lesson-invalidate
+    lesson-delete lesson-delete-by-plan lesson-delete-by-task
+    plan-create plan-get-by-id plan-get-by-name plan-get-all
+    plan-update plan-delete plan-upsert
+    task-create task-get-by-id task-get-by-plan task-get-by-plan-and-name
+    task-get-children task-get-all task-update task-delete task-delete-by-plan
+    task-upsert task-delete-orphans-query task-set-status task-add-dependency
+    task-remove-dependency task-get-blocking task-get-blocked
+    task-get-dependencies-for-plan task-delete-dependencies-for-task task-get-ready
+    trace-create trace-get-next-sequence trace-get-by-plan trace-get-by-task
+    trace-delete-by-plan trace-delete-by-task
+    fts-search-plans fts-search-tasks fts-search-facts
+    fts-highlight-plans fts-highlight-tasks fts-highlight-facts]}}
+ :config-in-ns {plan.db {:linters {:unused-namespace {:level :off}}}}}
