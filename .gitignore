@@ -1,1 +1,4 @@
 /.clj-kondo/.cache/
+/classes/
+/.lsp/
+/.cpcache/
