@@ -1,0 +1,81 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+title MCP Server Architecture - Planning Tool
+
+package "MCP Client" {
+    [Claude Desktop] as Claude
+    [Claude Code] as ClaudeCode
+    [Cursor] as Cursor
+}
+
+package "Planning Tool MCP Server" {
+    portin StdioTransport
+    
+    [get_capabilities] as CapTool #LightBlue
+    [execute] as ExecTool #LightGreen
+    [RPC Router] as Router #LightYellow
+    
+    package "Operation Handlers" #LightGray {
+        [fact/list] as ListOp
+        [fact/get] as GetOp
+        [fact/create] as CreateOp
+        [fact/update] as UpdateOp
+        [fact/delete] as DeleteOp
+    }
+    
+    [Capabilities Document] as CapDoc #LightPink
+}
+
+package "Data Layer" {
+    database "SQLite" as DB
+    [plan.models.fact] as FactModel
+}
+
+Claude --> StdioTransport
+ClaudeCode --> StdioTransport
+Cursor --> StdioTransport
+
+StdioTransport --> CapTool
+StdioTransport --> ExecTool
+
+CapTool --> CapDoc : Returns JSON
+ExecTool --> Router : Routes request
+
+Router --> ListOp : "operation: fact/list"
+Router --> GetOp : "operation: fact/get"
+Router --> CreateOp : "operation: fact/create"
+Router --> UpdateOp : "operation: fact/update"
+Router --> DeleteOp : "operation: fact/delete"
+
+ListOp --> DB
+GetOp --> DB
+CreateOp --> DB
+UpdateOp --> DB
+DeleteOp --> DB
+
+DB --> FactModel
+
+note right of CapTool
+  **Tool 1: get_capabilities**
+  Returns complete API spec
+  No parameters required
+end note
+
+note right of ExecTool
+  **Tool 2: execute**
+  Accepts JSON request
+  Dispatches to handlers
+end note
+
+note bottom of CapDoc
+  **Capabilities Document**
+  - Version info
+  - Operation definitions
+  - Parameter schemas
+  - Response types
+  - Examples
+end note
+
+@enduml

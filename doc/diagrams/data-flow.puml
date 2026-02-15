@@ -1,0 +1,65 @@
+@startuml
+!theme plain
+title Execute Tool - Data Flow
+
+start
+
+:Receive JSON request
+via "request" parameter;
+
+:Parse JSON string;
+
+if (Parse successful?) then (yes)
+    :Extract operation name;
+    :Extract parameters map;
+else (no)
+    :Return error:
+    "Invalid JSON";
+    stop
+endif
+
+switch (operation?)
+case (fact/list)
+    :Validate plan_id required;
+    :Query facts WHERE plan_id=?;
+    
+case (fact/get)
+    :Validate fact_id required;
+    :SELECT fact by id;
+    
+case (fact/create)
+    :Validate plan_id, name,
+    content required;
+    :INSERT new fact;
+    
+case (fact/update)
+    :Validate fact_id required;
+    :Check at least one field
+    to update provided;
+    :UPDATE fact SET ...;
+    
+case (fact/delete)
+    :Validate fact_id required;
+    :DELETE FROM facts
+    WHERE id=?;
+    
+case (default)
+    :Return error:
+    "Unknown operation";
+    stop
+endswitch
+
+if (Database error?) then (yes)
+    :Return error response
+    with error message;
+else (no)
+    :Format success response;
+    :Add status, operation name;
+    :Include result data;
+endif
+
+:Convert to JSON string;
+:Return via callback;
+
+stop
+@enduml

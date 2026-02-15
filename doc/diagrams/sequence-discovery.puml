@@ -1,0 +1,44 @@
+@startuml
+!theme plain
+title MCP Discovery Flow
+
+actor User as "User/Developer"
+participant LLM as "LLM Agent"
+participant Client as "MCP Client"
+participant Server as "MCP Server"
+
+== Initialization ==
+
+User -> Client: Start MCP server
+activate Client
+Client -> Server: Start ./plan mcp start
+activate Server
+Server --> Client: MCP server ready
+deactivate Client
+
+== Discovery Phase ==
+
+User -> LLM: What can you do with the planning tool?
+activate LLM
+LLM -> Client: get_capabilities()
+activate Client
+Client -> Server: Tool call
+Server --> Client: Return capabilities JSON
+deactivate Client
+Client --> LLM: API specification
+LLM --> User: I can manage facts - list, get, create, update, delete
+
+== Execution Phase ==
+
+User -> LLM: Create a fact for API URL
+LLM -> Client: execute(request JSON)
+activate Client
+Client -> Server: Tool call with request
+Server --> Client: Success response
+Client --> LLM: Fact created
+LLM --> User: Created fact API URL
+deactivate LLM
+deactivate Client
+deactivate Server
+
+@enduml

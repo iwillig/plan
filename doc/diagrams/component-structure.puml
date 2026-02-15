@@ -1,0 +1,75 @@
+@startuml
+!theme plain
+title MCP Server Code Structure
+
+package "plan.mcp-server" {
+    [make-tools] as MakeTools
+    [start-mcp-server] as StartServer
+    
+    package "Tool Definitions" {
+        [get_capabilities\ntool fn] as CapTool
+        [execute\ntool fn] as ExecTool
+    }
+    
+    package "Internal Functions" {
+        [execute-operation] as Router
+        [validate-params] as Validator
+        
+        package "Handlers" {
+            [handle-fact-list] as ListHandler
+            [handle-fact-get] as GetHandler
+            [handle-fact-create] as CreateHandler
+            [handle-fact-update] as UpdateHandler
+            [handle-fact-delete] as DeleteHandler
+        }
+    }
+    
+    [Capabilities\nDocument] as CapDoc #LightPink
+}
+
+package "External Dependencies" {
+    [clojure-mcp.core] as MCPCore
+    [plan.db] as DB
+    [plan.models.fact] as FactModel
+    [plan.config] as Config
+}
+
+MakeTools --> CapTool : creates
+MakeTools --> ExecTool : creates
+
+StartServer --> MakeTools : uses
+StartServer --> MCPCore : starts server
+
+CapTool --> CapDoc : returns
+
+ExecTool --> Router : dispatches
+ExecTool --> DB : connection
+
+Router --> Validator : validates
+Router --> ListHandler : fact/list
+Router --> GetHandler : fact/get
+Router --> CreateHandler : fact/create
+Router --> UpdateHandler : fact/update
+Router --> DeleteHandler : fact/delete
+
+ListHandler --> FactModel
+GetHandler --> FactModel
+CreateHandler --> FactModel
+UpdateHandler --> FactModel
+DeleteHandler --> FactModel
+
+StartServer --> Config : reads settings
+
+note right of MakeTools
+  Public API entry point
+  Creates the two MCP tools
+end note
+
+note bottom of Router
+  Central dispatcher
+  Routes to appropriate
+  handler based on
+  operation name
+end note
+
+@enduml
